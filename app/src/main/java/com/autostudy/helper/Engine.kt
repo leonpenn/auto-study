@@ -1119,43 +1119,72 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     // ================= 05 通关反馈 =================
 
+    /**
+     * 通关反馈：先点最后一颗星（5星好评），再点提交。
+     * 星级行位于弹层顶部之下——用 top > sheetTop+150 排除右上角的关闭按钮，
+     * 星星取最右侧的一颗（第5颗）。提交后弹层仍在则补一轮，仍卡住尝试关闭。
+     */
     private fun handleFeedback(nodes: List<SNode>) {
         enterState("FEEDBACK")
         updateDetail("通关反馈弹窗")
-        val submit = nodes.filter { it.text == "提交" }.maxByOrNull { it.bounds.bottom }
+
+        val root = host.root() ?: return
+        val after = ScreenReader.collect(root, includeAll = true)
+        val sheetTop = after.filter { it.text == "通关反馈" }.maxOfOrNull { it.bounds.top }
+            ?: nodes.filter { it.text == "通关反馈" }.maxOfOrNull { it.bounds.top }
+            ?: return
+
+        fun pickStar(list: List<SNode>): SNode? = list.filter {
+            it.visible && it.bounds.top > sheetTop + 150 &&
+                    it.bounds.width() in 40..160 && it.bounds.height() in 40..160 &&
+                    it.text.isEmpty()
+        }.maxByOrNull { it.bounds.left }
+
+        fun pickSubmit(list: List<SNode>): SNode? =
+            list.filter { it.text == "提交" }.maxByOrNull { it.bounds.bottom }
+
+        // 1) 最后一颗星 = 好评
+        val star = pickStar(after)
+        if (star != null) {
+            LogRepo.log("feedback", "点击最后一颗星(好评): ${star.bounds}")
+            clickNode(star)
+            sleep(600)
+        } else {
+            LogRepo.log("feedback", "未定位到星级图标，直接提交")
+        }
+
+        // 2) 提交
+        val submit = pickSubmit(after)
         if (submit == null) {
             sleep(1000); return
         }
         clickNode(submit)
         sleep(1600)
-        val root = host.root() ?: return
-        // includeAll：星星是无文字的图标节点，普通采集会过滤掉
-        val after = ScreenReader.collect(root, includeAll = true)
-        if (!after.joinToString("\n") { it.display }.contains("通关反馈")) {
+
+        // 3) 验证：弹层仍在则补一轮（星级→提交），仍卡住尝试关闭
+        val root3 = host.root() ?: return
+        val after3 = ScreenReader.collect(root3, includeAll = true)
+        if (!after3.joinToString("\n") { it.display }.contains("通关反馈")) {
             LogRepo.log("feedback", "反馈提交成功")
             enterState(null)
             return
         }
-        // 星级未选：点弹层里第一个方形可点元素（星星），再提交
-        LogRepo.log("feedback", "反馈仍在，尝试点击星级")
-        val sheetTop = nodes.filter { it.text == "通关反馈" }.maxOfOrNull { it.bounds.top } ?: return
-        val star = after.filter { it.visible && it.bounds.top > sheetTop - 100 }
-            .filter { it.bounds.width() in 40..160 && it.bounds.height() in 40..160 }
-            .filter { it.text.isEmpty() }
-            .minByOrNull { it.bounds.left }
-        if (star != null) {
-            clickNode(star)
-            sleep(700)
+        LogRepo.log("feedback", "反馈仍在，补点星级后重试提交")
+        pickStar(after3)?.let {
+            clickNode(it)
+            sleep(600)
         }
-        val submit2 = after.filter { it.text == "提交" }.maxByOrNull { it.bounds.bottom }
-        submit2?.let { clickNode(it) }
+        pickSubmit(after3)?.let {
+            clickNode(it)
+        }
         sleep(1600)
-        val root3 = host.root() ?: return
-        val after3 = ScreenReader.collect(root3, includeAll = true)
-        if (after3.joinToString("\n") { it.display }.contains("通关反馈")) {
-            // 放弃反馈，尝试关闭
+        val root4 = host.root() ?: return
+        val after4 = ScreenReader.collect(root4, includeAll = true)
+        if (after4.joinToString("\n") { it.display }.contains("通关反馈")) {
             LogRepo.log("feedback", "反馈仍卡住，尝试关闭弹层")
-            val close = after3.firstOrNull { it.display == "×" || it.display == "✕" || it.desc.contains("关闭") }
+            val close = after4.firstOrNull {
+                it.display == "×" || it.display == "✕" || it.desc.contains("关闭")
+            }
             close?.let { clickNode(it) }
             sleep(1200)
         }
