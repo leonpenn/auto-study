@@ -1,0 +1,17 @@
+# 构建环境与本地产物（体积大/机器相关，不入库）
+build-env/
+app/build/
+.gradle/
+build/
+local.properties
+*.log
+
+# 调试截图（含内部页面信息，不入库）
+*.jpg
+*.jpeg
+*.png
+
+# IDE
+.idea/
+*.iml
+.DS_Store
