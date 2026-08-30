@@ -1,6 +1,7 @@
 package com.autostudy.helper
 
 import android.content.Intent
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
@@ -122,11 +123,17 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFF444444.toInt())
             text = "1. 完成上面 ①~④ 检查\n" +
                     "2. 打开微信进入「话术通关」页面\n" +
-                    "3. 屏幕左侧出现悬浮窗，点「▶ 开始」\n" +
+                    "3. 屏幕右侧出现悬浮窗，点「▶ 开始」\n" +
                     "4. 保持亮屏前台，期间不要触碰手机\n" +
                     "5. 可随时「⏸ 暂停」或「⏹ 停止」"
         }
         box.addView(steps)
+        box.addView(TextView(ctx).apply {
+            textSize = 13f
+            setTextColor(0xFFC62828.toInt())
+            setTypeface(typeface, Typeface.BOLD)
+            text = "如果点击开始按钮之后，等待一会儿没有反应，请杀掉app，重新进入，按照1~3的步骤重新启用。"
+        })
 
         val btnRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(14), 0, 0) }
         btnRow.addView(Button(ctx).apply {
