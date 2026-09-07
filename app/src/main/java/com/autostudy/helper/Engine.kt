@@ -50,6 +50,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     @Volatile var paused = false
     @Volatile private var stopFlag = false
     @Volatile private var generation = 0
+    /** 引擎自动重启计数（用户手动停止时清零；连续重启超限则真停，防止崩溃风暴） */
+    @Volatile private var autoRestarts = 0
     private var thread: Thread? = null
     private val rng: kotlin.random.Random = kotlin.random.Random
 
@@ -120,6 +122,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         stopFlag = false
         paused = false
         running = true
+        autoRestarts = 0
         QuestionStore.init(appCtx)
         thread = Thread {
             loop(g)
@@ -198,7 +201,28 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             player.shutdown()
             if (g == generation) {
                 running = false
-                host.onStatus("已停止")
+                // 非用户主动停止：自动以新代数重启（上限5次，防崩溃风暴）。
+                // 22.jpg案例：长按阻塞期间抛Error级异常跳过防护直出finally，引擎死亡但任务未完成
+                if (!stopFlag && autoRestarts < 5) {
+                    autoRestarts++
+                    LogRepo.log("engine", "引擎异常退出，自动重启(${autoRestarts}/5)")
+                    host.onStatus("⚠ 引擎异常，自动重启(${autoRestarts}/5)")
+                    host.vibrate(300)
+                    Thread {
+                        try {
+                            Thread.sleep(1500)
+                        } catch (_: InterruptedException) {
+                        }
+                        start()
+                    }.start()
+                } else {
+                    if (autoRestarts >= 5) {
+                        LogRepo.log("engine", "连续自动重启达上限，停止运行")
+                        host.onStatus("⚠ 引擎反复异常已停止，请分享日志")
+                        host.vibrate(1000)
+                    }
+                    host.onStatus("已停止")
+                }
             }
             LogRepo.log("engine", "引擎退出 gen=$g")
         }
@@ -779,21 +803,23 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                     host.rememberNextBtn(btn.centerX.toFloat(), btn.centerY.toFloat())
                     host.tap(btn.centerX.toFloat(), btn.centerY.toFloat())
                     advanced = advanceConfirmWindow(beforeX)
-                } else {
+                } else if (nodes.size < 25) {
+                    // 残树（如18节点）："下一题"就在底部固定位置，按记忆位置盲点即可，
+                    // 不必等树恢复——位置记忆机制正是为这一刻准备的
                     val memo = host.nextBtnPoint()
                     if (memo != null) {
-                        LogRepo.log("learn", "树内容不全，按记忆位置点击下一题")
+                        LogRepo.log("learn", "残树(${nodes.size}节点)，按记忆位置点击下一题")
                         host.tap(memo.x, memo.y)
                         advanced = advanceConfirmWindow(beforeX)
-                    } else if (nodes.size < 25) {
-                        LogRepo.log("learn", "页面节点过少(${nodes.size})，尝试自愈")
+                    } else {
+                        LogRepo.log("learn", "残树且无记忆位置，尝试自愈")
                         host.poke()
                         sleep(1500)
-                    } else {
-                        LogRepo.log("learn", "推进中未找到[下一题/提交]，尝试滚动")
-                        host.swipeUp()
-                        sleep(800)
                     }
+                } else {
+                    LogRepo.log("learn", "推进中未找到[下一题/提交]，尝试滚动")
+                    host.swipeUp()
+                    sleep(800)
                 }
                 if (advanced) return true
             }
