@@ -415,6 +415,10 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         }
         listScrolled = false
         topicTitle = card.text.take(50)
+        // 每个新专题优先回到点按录音模式（点按历史表现最好；
+        // 长按模式只在点按失败时作为本专题内的兜底）
+        micMode = 1
+        micModeTriedHold = false
         answeredStems.clear()
         lastLearnedSig = null
         lastLearnX = null
@@ -658,6 +662,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             micModeTriedHold = true
             micMode = 2
             LogRepo.log("learn", "点按模式失败，切换长按录音模式重试")
+            host.onStatus("已切换长按录音模式")
             return learnOneItem(content, sig)
         }
         return false
@@ -809,27 +814,43 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             return false
         }
         if (micMode == 2) {
-            // 长按模式：手势按住的同时 TTS 朗读
-            val estMs = (content.length * 620L / Prefs.ttsSpeed.coerceAtLeast(0.5f)).toLong() + 5000
-            host.hold(mic.x, mic.y, estMs)
-            sleep(600)
+            // 长按模式：按住话筒的同时 TTS 朗读，读完后等按压手势真正结束再返回
+            // （期间绝不能派发其他手势——任何新手势都会把按住中途取消，截断录音）
+            // 估算：中文TTS约每秒 4.2*语速 个字，另留4秒余量
+            val estMs = (content.length * 1000f / (4.2f * Prefs.ttsSpeed.coerceAtLeast(0.5f))).toLong() + 4000
+            val holdMs = estMs.coerceIn(6000, 58000)
+            LogRepo.log("learn", "长按录音模式 hold=${holdMs / 1000}s (${content.length}字)")
+            host.onStatus("长按录音中…")
+            host.hold(mic.x, mic.y, holdMs)
+            sleep(500)
             player.speakAndWait(content)
-            sleep(800)
-            host.waitForGesture(8000)
+            sleep(600)
+            // 阻塞等待按压结束（朗读通常已耗时大半，这里只等剩余部分）
+            host.waitForGesture(holdMs + 6000)
+            LogRepo.log("learn", "长按结束，等待评测")
             return true
         }
         // 点按模式：点一下开始录音
         host.tap(mic.x, mic.y)
-        sleep(1300)
-        var recVisible = recordingVisible()
+        // 每500ms轮询录音指示，最多3秒（比固定等待更快发现启动）
+        var recVisible = false
+        var waited = 0
+        while (waited < 3000 && !stopFlag) {
+            sleep(500)
+            waited += 500
+            if (recordingVisible()) { recVisible = true; break }
+        }
         recordingSeconds()?.let { LogRepo.log("learn", "录音已开始(${it}s)") }
-        // 点按后没看到录音指示：补试一次长按（有的页面是"按住说话"式）
+        // 第一次没录上：再点一次（首次点击可能落在页面加载完成前），不再做长按试探
         if (!recVisible) {
-            LogRepo.log("learn", "点按后无录音指示，补试长按话筒")
-            host.longPress(mic.x, mic.y, 1200)
-            sleep(600)
-            recVisible = recordingVisible()
-            if (recVisible) LogRepo.log("learn", "长按后检测到录音指示")
+            LogRepo.log("learn", "首次点按未见录音指示，重点一次")
+            host.tap(mic.x, mic.y)
+            waited = 0
+            while (waited < 2000 && !stopFlag) {
+                sleep(500)
+                waited += 500
+                if (recordingVisible()) { recVisible = true; break }
+            }
         }
         if (recVisible) LogRepo.log("learn", "确认录音中，开始朗读")
 
@@ -839,23 +860,24 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             // 再次点击=提交跟读
             host.tap(mic.x, mic.y)
             // 验证录音确实停止（秒数/指示消失），最多5秒；2秒后还在录就再点一次
-            var waited = 0
+            var w2 = 0
             var retapped = false
-            while (waited < 5000 && !stopFlag) {
+            while (w2 < 5000 && !stopFlag) {
                 sleep(700)
-                waited += 700
+                w2 += 700
                 if (!recordingVisible()) break
-                if (!retapped && waited >= 2100) {
+                if (!retapped && w2 >= 2100) {
                     retapped = true
                     LogRepo.log("learn", "录音仍在进行，再点一次停止")
                     host.tap(mic.x, mic.y)
                 }
             }
-            LogRepo.log("learn", "停止录音完成(${waited}ms)")
+            LogRepo.log("learn", "停止录音完成(${w2}ms)")
         } else {
-            // 无指示：按"点开始-点停止"两段式处理
-            host.tap(mic.x, mic.y)
-            sleep(800)
+            // 两次点按都没录上：如实返回失败，交给上层切换长按模式，
+            // 这里不再盲点第二次（否则可能在语音结束后又开一段空录音）
+            LogRepo.log("learn", "两次点按均未检测到录音指示")
+            return false
         }
         if (micMode == 0) {
             micMode = 1
