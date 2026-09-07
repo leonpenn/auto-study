@@ -796,7 +796,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val now = System.currentTimeMillis()
             if (now - lastClick > 3500) {
                 lastClick = now
-                val btn = ScreenReader.findByContains(nodes, "下一题") ?: ScreenReader.findByContains(nodes, "提交")
+                val btn = findNextButton(nodes)
                 var advanced = false
                 if (btn != null) {
                     // 底部导航按钮必须用真实坐标点按：小程序按钮不响应无障碍ACTION_CLICK
@@ -817,7 +817,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                         sleep(1500)
                     }
                 } else {
-                    LogRepo.log("learn", "推进中未找到[下一题/提交]，尝试滚动")
+                    LogRepo.log("learn", "推进中未找到底部[下一题/提交]，尝试滚动")
                     host.swipeUp()
                     sleep(800)
                 }
@@ -936,6 +936,20 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                     listOf("录音", "正在朗读", "朗读中", "松开", "停止录音", "取消", "再次点击", "提交跟读")
                         .any { n.text.contains(it) || n.desc.contains(it) }
         }
+    }
+
+    /**
+     * 找底部栏的"下一题/提交"按钮。带 y 位置过滤：按钮固定在屏幕底部
+     * （top > 78% 高度）。WebView 滚动后会把 fixed 按钮坐标错报成页面布局
+     * 位置（y 可能变成 50% 附近的中部），严格过滤防止点到页面中部/悬浮窗。
+     */
+    private fun findNextButton(nodes: List<SNode>): SNode? {
+        val screenH = screenBounds()?.height() ?: return null
+        val bottomLimit = screenH * 0.78
+        val btn = ScreenReader.findByContains(nodes, "下一题")
+            ?: nodes.filter { it.text.startsWith("提交") }.minByOrNull { it.bounds.bottom }
+            ?: return null
+        return if (btn.visible && btn.bounds.top >= bottomLimit) btn else null
     }
 
     /** 点击推进按钮后的2.8秒确认窗口：只观察不补点，翻页较慢时不会误点下一题的按钮 */
@@ -1077,14 +1091,12 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         }
 
         // ---------- 下一题 / 提交 ----------
-        val next = ScreenReader.findByContains(nodes, "下一题")
-        val submit = nodes.filter { it.text == "提交" || it.text.startsWith("提交") }.minByOrNull { it.bounds.bottom }
-        val btn = next ?: submit
+        val btn = findNextButton(nodes)
         if (btn == null) {
             // 树内容不全时按记忆位置盲点（学习页/小测页底部栏位置相同）
             val memo = host.nextBtnPoint()
             if (memo != null) {
-                LogRepo.log("quiz", "未找到按钮，按记忆位置点击推进")
+                LogRepo.log("quiz", "未找到底部按钮，按记忆位置点击推进")
                 host.tap(memo.x, memo.y)
                 sleep(rand(1500L, 2500L))
                 enterState(null)
@@ -1169,8 +1181,9 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     /**
      * 通关反馈：先点最后一颗星（5星好评），再点提交。
-     * 星级行位于弹层顶部之下——用 top > sheetTop+150 排除右上角的关闭按钮，
-     * 星星取最右侧的一颗（第5颗）。提交后弹层仍在则补一轮，仍卡住尝试关闭。
+     * 星星定位两级：① 无文字方形图标（弹层内、排除关闭按钮）取最右；
+     * ② 几何兜底——以"请对本次通关…评价"提示行为锚点，第5颗星中心
+     * ≈ (屏宽*0.40, 锚点bottom+55px)（5星行占屏宽约40%，靠左排列）。
      */
     private fun handleFeedback(nodes: List<SNode>) {
         enterState("FEEDBACK")
@@ -1184,12 +1197,22 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
         fun pickStar(list: List<SNode>): SNode? = list.filter {
             it.visible && it.bounds.top > sheetTop + 150 &&
-                    it.bounds.width() in 40..160 && it.bounds.height() in 40..160 &&
-                    it.text.isEmpty()
+                    it.bounds.width() in 30..200 && it.bounds.height() in 30..200 &&
+                    it.text.isEmpty() &&
+                    (it.desc.contains("星") || it.desc.contains("star") || true)
         }.maxByOrNull { it.bounds.left }
 
         fun pickSubmit(list: List<SNode>): SNode? =
             list.filter { it.text == "提交" }.maxByOrNull { it.bounds.bottom }
+
+        fun starFallbackPoint(): PointF? {
+            val anchor = after.firstOrNull {
+                it.text.contains("请对本次通关") || it.text.contains("进行评价")
+            } ?: return null
+            val sw = screenBounds()?.width() ?: return null
+            // 第5颗星：5星行靠左排列，占屏宽约40%，最后一颗中心约在屏宽40%处
+            return PointF(sw * 0.40f, anchor.bounds.bottom + 55f)
+        }
 
         // 1) 最后一颗星 = 好评
         val star = pickStar(after)
@@ -1198,7 +1221,14 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             clickNode(star)
             sleep(600)
         } else {
-            LogRepo.log("feedback", "未定位到星级图标，直接提交")
+            val p = starFallbackPoint()
+            if (p != null) {
+                LogRepo.log("feedback", "未找到星星节点，按几何位置点击第5星: $p")
+                host.tap(p.x, p.y)
+                sleep(600)
+            } else {
+                LogRepo.log("feedback", "未定位到星级（无节点无锚点），直接提交")
+            }
         }
 
         // 2) 提交
@@ -1209,7 +1239,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         clickNode(submit)
         sleep(1600)
 
-        // 3) 验证：弹层仍在则补一轮（星级→提交），仍卡住尝试关闭
+        // 3) 验证：弹层仍在则补一轮（几何星级→提交），仍卡住尝试关闭
         val root3 = host.root() ?: return
         val after3 = ScreenReader.collect(root3, includeAll = true)
         if (!after3.joinToString("\n") { it.display }.contains("通关反馈")) {
@@ -1218,13 +1248,17 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             return
         }
         LogRepo.log("feedback", "反馈仍在，补点星级后重试提交")
-        pickStar(after3)?.let {
-            clickNode(it)
+        val star2 = pickStar(after3)
+        if (star2 != null) {
+            clickNode(star2)
             sleep(600)
+        } else {
+            starFallbackPoint()?.let {
+                host.tap(it.x, it.y)
+                sleep(600)
+            }
         }
-        pickSubmit(after3)?.let {
-            clickNode(it)
-        }
+        pickSubmit(after3)?.let { clickNode(it) }
         sleep(1600)
         val root4 = host.root() ?: return
         val after4 = ScreenReader.collect(root4, includeAll = true)

@@ -132,7 +132,17 @@ class AutoService : AccessibilityService(), Engine.EngineHost {
     override fun waitForGesture(timeoutMs: Long): Boolean =
         gestureLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
 
+    /** 目标点落在自己悬浮窗面板上时拒绝执行（防止引擎点中自己的暂停/停止按钮） */
+    private fun hitsOwnPanel(x: Float, y: Float): Boolean {
+        val r = panel?.currentBounds() ?: return false
+        return r.contains(x.toInt(), y.toInt())
+    }
+
     private fun dispatchStroke(x1: Float, y1: Float, x2: Float, y2: Float, ms: Long): Boolean {
+        if (hitsOwnPanel(x1, y1)) {
+            LogRepo.log("svc", "拦截：目标(${"%.0f".format(x1)},${"%.0f".format(y1)})落在悬浮窗上，已跳过")
+            return false
+        }
         return try {
             val p = Path().apply {
                 moveTo(x1, y1)

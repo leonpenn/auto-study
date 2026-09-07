@@ -229,6 +229,25 @@ class FloatPanel(private val svc: AutoService, private val engine: Engine) {
         shown = false
     }
 
+    /** 当前面板在屏幕上的区域（含8dp余量）；未显示返回null。供点击拦截防自击 */
+    fun currentBounds(): android.graphics.Rect? {
+        val v = root ?: return null
+        return try {
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            val r = android.graphics.Rect(
+                loc[0], loc[1], loc[0] + v.width, loc[1] + v.height
+            )
+            if (r.isEmpty) null else {
+                val m = dp(8)
+                r.inset(-m, -m)
+                r
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun roundBg(color: Int, radius: Float): GradientDrawable =
         GradientDrawable().apply { setColor(color); cornerRadius = radius }
 
