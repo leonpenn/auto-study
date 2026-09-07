@@ -1263,14 +1263,58 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         val root4 = host.root() ?: return
         val after4 = ScreenReader.collect(root4, includeAll = true)
         if (after4.joinToString("\n") { it.display }.contains("通关反馈")) {
-            LogRepo.log("feedback", "反馈仍卡住，尝试关闭弹层")
-            val close = after4.firstOrNull {
+            // 第三轮：横向扫描。几何比例两轮都失败说明估计偏差，
+            // 不再猜——在星级行高度从左到右扫一排候选点。
+            // 星级组件"最后一次点击的位置决定星级"，扫描终点偏右即可命中第5星。
+            LogRepo.log("feedback", "两轮未成功，启动横向扫描星级")
+            sweepStars(after3)
+            pickSubmit(after3)?.let { clickNode(it) }
+            sleep(1600)
+            val root5 = host.root() ?: return
+            val after5 = ScreenReader.collect(root5, includeAll = true)
+            if (!after5.joinToString("\n") { it.display }.contains("通关反馈")) {
+                LogRepo.log("feedback", "扫描轮提交成功")
+                enterState(null)
+                return
+            }
+            LogRepo.log("feedback", "扫描后仍未提交，尝试关闭弹层")
+            val close = after5.firstOrNull {
                 it.display == "×" || it.display == "✕" || it.desc.contains("关闭")
             }
             close?.let { clickNode(it) }
             sleep(1200)
         }
         enterState(null)
+    }
+
+    /**
+     * 星级行横向扫描：在"评价提示行"下方的高度带上，从屏宽10%到50%逐点点击。
+     * 星级组件以最后一次点击为准——扫描覆盖真实星星行时，最右侧的点即5星。
+     * 每点后若弹层消失（提交恰好生效）立即返回。
+     */
+    private fun sweepStars(ref: List<SNode>) {
+        val anchor = ref.firstOrNull {
+            it.text.contains("请对本次通关") || it.text.contains("进行评价")
+        }
+        val baseY = anchor?.bounds?.bottom?.plus(55f)
+            ?: screenBounds()?.let { it.top + (it.height() * 0.82).toInt() }?.toFloat()
+            ?: return
+        val sw = screenBounds()?.width() ?: return
+        // 扫描区间：屏宽 10%~52%，共 9 个候选点，从左到右（终点偏右=5星）
+        val xs = (1..9).map { sw * (0.10f + 0.0525f * it) }
+        for (x in xs) {
+            if (stopFlag) return
+            LogRepo.log("feedback", "扫描星级点击: (${x.toInt()}, ${baseY.toInt()})")
+            host.tap(x, baseY)
+            sleep(400)
+            // 每点一次检查弹层是否意外消失（例如扫描点恰好命中了可关闭区域）
+            val r = host.root() ?: continue
+            val cur = ScreenReader.collect(r)
+            if (cur.none { it.text == "通关反馈" }) {
+                LogRepo.log("feedback", "扫描中弹层消失，评分完成")
+                return
+            }
+        }
     }
 
     // ================= 06 通关结果 =================
