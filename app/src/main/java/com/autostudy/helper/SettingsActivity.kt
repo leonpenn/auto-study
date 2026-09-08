@@ -135,7 +135,6 @@ class SettingsActivity : AppCompatActivity() {
             }.start()
         })
         box.addView(tvLlmTest)
-        box.addView(label("提示：免费推荐智谱 glm-4-flash；DeepSeek 便宜量大；本地 Ollama 填 http://127.0.0.1:11434/v1"))
 
         // ---------- TTS ----------
         box.addView(head("朗读语音 (TTS)"))
