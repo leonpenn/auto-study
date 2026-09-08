@@ -64,6 +64,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private var stateEnter = 0L
     private var listTabClicked = false
     private var listScrolled = false
+    private var listScrolledAttempts = 0
     private var topicTitle = ""
     private var quizRetries = 0
     private var micMode = 0 // 0=未知 1=点按 2=长按
@@ -88,6 +89,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private var lastLearnedSig: String? = null   // 刚读完并已点下一题的那条（防页面未切换时重复朗读）
     private var lastLearnX: String? = null       // 学习进度x，前进时刷新看门狗
     private var lastQuizStem: String? = null     // 当前小测题干，切题时刷新看门狗
+    private var quizSubmitSig: String? = null    // 已点过"提交"的题干（防重复提交；重试/换题时复位）
     private val answeredStems = LinkedHashSet<String>() // 本专题已作答过的题
 
     // ---------- 统计 ----------
@@ -375,6 +377,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         lastLearnedSig = null
         lastLearnX = null
         lastQuizStem = null
+        quizSubmitSig = null
         passedAwaitingAdvance = null
         passAdvanceFails = 0
         quizRetries = 0
@@ -424,20 +427,27 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 finishAll()
                 return
             }
-            if (!listScrolled) {
-                LogRepo.log("list", "当前屏未找到卡片，尝试滚动")
+            if (listScrolledAttempts < 3) {
+                // 允许连续滚动3次（加载慢/卡片靠下）；每次暂停恢复后计数清零重新尝试
+                LogRepo.log("list", "当前屏未找到卡片，尝试滚动(${listScrolledAttempts + 1}/3)")
                 host.swipeUp()
+                listScrolledAttempts++
                 listScrolled = true
                 sleep(1500)
             } else {
                 host.onStatus("列表无未通关卡片，暂停")
-                LogRepo.log("list", "有剩余计数但找不到卡片，暂停等待人工处理")
+                LogRepo.log("list", "滚动3次仍无卡片，暂停等待人工处理")
                 host.vibrate(600)
                 paused = true
+                // 复位滚动计数：用户处理完点"继续"时会重新尝试滚动3次，
+                // 而不是立即再次暂停（A1修复）
+                listScrolledAttempts = 0
+                listScrolled = false
             }
             return
         }
         listScrolled = false
+        listScrolledAttempts = 0
         topicTitle = card.text.take(50)
         // 每个新专题优先回到点按录音模式（点按历史表现最好；
         // 长按模式只在点按失败时作为本专题内的兜底）
@@ -447,6 +457,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         lastLearnedSig = null
         lastLearnX = null
         lastQuizStem = null
+        quizSubmitSig = null
         resultCounted = false
         passedAwaitingAdvance = null
         passAdvanceFails = 0
@@ -1091,6 +1102,13 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         }
 
         // ---------- 下一题 / 提交 ----------
+        // 已提交过小测且尚未翻页：只等待，绝不重复点提交（A4修复，防重复提交）
+        if (quizSubmitSig == stemKey) {
+            LogRepo.log("quiz", "本题已提交过，等待服务器跳转")
+            sleep(2000)
+            enterState(null)
+            return
+        }
         val btn = findNextButton(nodes)
         if (btn == null) {
             // 树内容不全时按记忆位置盲点（学习页/小测页底部栏位置相同）
@@ -1111,6 +1129,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         val isSubmit = btn.text.contains("提交")
         // 底部导航按钮必须用真实坐标点按（小程序按钮不响应无障碍ACTION_CLICK）
         host.tap(btn.centerX.toFloat(), btn.centerY.toFloat())
+        if (isSubmit) quizSubmitSig = stemKey
         if (isSubmit) {
             LogRepo.log("quiz", "已提交小测，等待评测结果")
             host.onStatus("小测已提交，等待结果")
@@ -1361,6 +1380,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             lastLearnedSig = null
             lastLearnX = null
             lastQuizStem = null
+            quizSubmitSig = null
             quizRetries = 0
             val back = ScreenReader.findByContains(nodes, "返回通关列表")
             if (back != null) {
@@ -1383,11 +1403,13 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             if (quizRetries < Prefs.failRetry) {
                 quizRetries++
                 LogRepo.log("result", "不合格，第$quizRetries 次重新通关")
-                // 重试会重新进入学习/小测，必须清掉"已读过/已作答"守卫，否则会拒绝朗读、跳过选项直接交白卷
+                // 重试会重新进入学习/小测，必须清掉"已读过/已作答/已提交"守卫，
+                // 否则会拒绝朗读、跳过选项直接交白卷
                 answeredStems.clear()
                 lastLearnedSig = null
                 lastLearnX = null
                 lastQuizStem = null
+                quizSubmitSig = null
                 val retry = ScreenReader.findByContains(nodes, "重新通关")
                 if (retry != null) {
                     clickNode(retry)

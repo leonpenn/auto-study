@@ -123,7 +123,9 @@ class LlmClient(private val cfg: LlmConfig) {
     }
 
     private fun onlyLetters(s: String): String? {
-        val letters = Regex("[A-H]").findAll(s.uppercase()).map { it.value }.distinct().toList()
+        // 排序去重：多选答案与顺序无关（"BA"≡"AB"），统一为升序，
+        // 保证与错题规避表(wrongTried)的精确匹配可靠
+        val letters = Regex("[A-H]").findAll(s.uppercase()).map { it.value }.distinct().sorted().toList()
         return if (letters.isEmpty()) null else letters.joinToString("")
     }
 
