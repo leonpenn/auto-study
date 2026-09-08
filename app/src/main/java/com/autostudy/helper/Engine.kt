@@ -1063,14 +1063,24 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         LogRepo.log("quiz", "题干=$stemText 选项=${availableLetters.joinToString("")}")
 
         // ---------- 决定答案：缓存 → AI → 蒙题（同一题只作答一次，防止翻页失败重复点击取消选中） ----------
+        // 多选题平台要求至少选2项才能提交，单字母答案视为无效（不入缓存、不采用）
         if (stemKey in answeredStems) {
             LogRepo.log("quiz", "本题已作答过，跳过选项直接翻页")
         } else {
             var answer: String? = QuestionStore.get(stemText)?.answer
             var source = if (answer != null) "cache" else ""
+            if (answer != null && isMulti && answer.length < 2) {
+                LogRepo.log("quiz", "缓存多选答案仅${answer.length}个字母，视为无效")
+                answer = null
+                source = ""
+            }
             if (answer == null && llm != null) {
                 host.onStatus("AI答题中…")
                 answer = llm!!.ask(stemText, opts.map { it.first to it.second })
+                if (answer != null && isMulti && answer!!.length < 2) {
+                    LogRepo.log("quiz", "AI多选答案仅${answer}一个字母，视为无效转兜底")
+                    answer = null
+                }
                 if (answer != null) {
                     QuestionStore.put(stemText, type, answer!!, "llm")
                     source = "llm"
@@ -1088,8 +1098,13 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             }
             // 与可用选项求交集；排序去重避免重复点击取消选中
             val letters = answer.orEmpty().uppercase().filter { it in availableLetters }.toSortedSet()
-            val finalLetters = if (letters.isEmpty()) guessAnswer(isMulti, availableLetters, emptySet())
+            var finalLetters = if (letters.isEmpty()) guessAnswer(isMulti, availableLetters, emptySet())
             else letters.joinToString("")
+            // 多选题最终防线：不足2项则全选（保证提交按钮可用）
+            if (isMulti && finalLetters.length < 2) {
+                LogRepo.log("quiz", "多选最终答案仅${finalLetters}一项，按全选兜底")
+                finalLetters = availableLetters.joinToString("")
+            }
             LogRepo.log("quiz", "作答=$finalLetters 来源=$source")
 
             for (letter in finalLetters) {
@@ -1177,14 +1192,20 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         // 排除本轮重试中已被证实错误的选项
         val pool = available.filter { c -> exclude.none { it.contains(c) } }
         return if (isMulti) {
-            if (Prefs.guessMulti == "random" || (pool.isNotEmpty() && pool.size < available.size)) {
-                // 随机模式，或"全选"已被证伪时：从未证伪的选项里随机挑一个子集
-                val src = if (pool.isEmpty()) available else pool
-                val count = 1 + rng.nextInt(src.size)
-                src.shuffled(rng).take(count).sorted().joinToString("")
-            } else {
-                // 全选
-                available.joinToString("")
+            // 平台要求多选至少2项才能提交：任何分支都保证返回≥2个字母
+            val wantRandom = Prefs.guessMulti == "random" || pool.size < available.size
+            when {
+                pool.size >= 2 && !wantRandom ->
+                    // 全选（未被证伪）
+                    available.joinToString("")
+                pool.size >= 2 ->
+                    // 从未证伪选项随机挑2~N项（"全选"已被证伪时绝不重复全选）
+                    pool.shuffled(rng).take(2 + rng.nextInt(pool.size - 1))
+                        .sorted().joinToString("")
+                else ->
+                    // 未证伪选项不足2个：从全部选项随机挑2项碰运气，
+                    // 绝不重复已被证伪的完整组合
+                    available.shuffled(rng).take(2).sorted().joinToString("")
             }
         } else {
             if (Prefs.guessSingle == "random") {
