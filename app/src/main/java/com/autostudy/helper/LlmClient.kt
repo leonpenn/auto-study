@@ -35,12 +35,28 @@ class LlmClient(private val cfg: LlmConfig) {
         return if (b.endsWith("/chat/completions")) b else "$b/chat/completions"
     }
 
-    private fun systemPrompt(): String =
+    private fun systemPrompt(isMulti: Boolean): String =
         "你是银行保险话术学习小测的答题助手。根据给定的题目和选项，给出正确答案。" +
-                "严格只输出一个JSON对象，格式：{\"answer\":\"A\"}；如果是多选题输出如 {\"answer\":\"ACD\"}。" +
+                (if (isMulti) {
+                    "注意：这是多选题，正确答案有2个及以上选项，必须全部选出，" +
+                            "绝不能只给1个选项。"
+                } else {
+                    "注意：这是单选题，只选择1个最正确的选项。"
+                }) +
+                "严格只输出一个JSON对象：" +
+                (if (isMulti) {
+                    "格式：{\"answer\":\"ACD\"}（多选，字母按顺序排列）。"
+                } else {
+                    "格式：{\"answer\":\"A\"}。"
+                }) +
                 "不要输出任何解释、markdown代码块或其他内容。"
 
-    private fun userPrompt(stem: String, options: List<Pair<String, String>>): String = buildString {
+    private fun userPrompt(
+        stem: String,
+        options: List<Pair<String, String>>,
+        isMulti: Boolean
+    ): String = buildString {
+        if (isMulti) appendLine("（多选题，正确答案有2个及以上选项，必须全部选出）")
         appendLine("题目：${stem}")
         options.forEach { (letter, text) -> appendLine("$letter、$text") }
         appendLine("请只输出答案JSON。")
@@ -49,14 +65,14 @@ class LlmClient(private val cfg: LlmConfig) {
     /**
      * 请求答案。返回形如 "AC" 的大写字母串；失败返回 null（调用方走蒙题兜底）。
      */
-    fun ask(stem: String, options: List<Pair<String, String>>): String? {
+    fun ask(stem: String, options: List<Pair<String, String>>, isMulti: Boolean): String? {
         val body = JSONObject().apply {
             put("model", cfg.model)
             put("temperature", 0.1)
             put("max_tokens", 100)
             put("messages", JSONArray()
-                .put(JSONObject().put("role", "system").put("content", systemPrompt()))
-                .put(JSONObject().put("role", "user").put("content", userPrompt(stem, options))))
+                .put(JSONObject().put("role", "system").put("content", systemPrompt(isMulti)))
+                .put(JSONObject().put("role", "user").put("content", userPrompt(stem, options, isMulti))))
         }
         repeat(2) { attempt ->
             try {

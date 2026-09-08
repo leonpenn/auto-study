@@ -1076,7 +1076,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             }
             if (answer == null && llm != null) {
                 host.onStatus("AI答题中…")
-                answer = llm!!.ask(stemText, opts.map { it.first to it.second })
+                answer = llm!!.ask(stemText, opts.map { it.first to it.second }, isMulti)
                 if (answer != null && isMulti && answer!!.length < 2) {
                     LogRepo.log("quiz", "AI多选答案仅${answer}一个字母，视为无效转兜底")
                     answer = null
@@ -1376,12 +1376,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val hasUnpassed = Regex("未通关\\(\\d+\\)").containsMatchIn(j)
             complete = hasTitle && hasBranch && hasPassed && hasUnpassed
             if (complete) break
-            // 服务器报错弹窗：自动点"重试"
-            nodes.firstOrNull { it.text == "重试" || it.text.contains("点击重试") }?.let {
-                LogRepo.log("result", "检测到服务器报错弹窗，点击重试")
-                clickNode(it)
-                sleep(1500)
-            }
             sleep(700)
             loadWaited += 700
             val r = host.root() ?: break
