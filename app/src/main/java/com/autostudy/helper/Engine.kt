@@ -1362,22 +1362,38 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private fun handleResult(nodes0: List<SNode>, joined0: String) {
         enterState("RESULT")
         // 结果页刚打开时数据可能未加载完（24.jpg）：过早点"返回通关列表"会直接
-        // 退出小程序。等排名区加载标志出现（最多10秒）再判定与点击。
+        // 退出小程序或触发服务器报错。等全部加载标志齐备（最多20秒），
+        // 超时则强制继续点击；期间出现"重试"弹窗自动点击
         var nodes = nodes0
         var joined = joined0
         var loadWaited = 0
-        while (loadWaited < 10_000 && !stopFlag) {
+        var complete = false
+        while (loadWaited < 20_000 && !stopFlag) {
             val j = nodes.joinToString("\n") { it.display }
-            if (j.contains("通关排名") || j.contains("支行网点") ||
-                Regex("已通关\\(\\d+\\)").containsMatchIn(j)
-            ) break
+            val hasTitle = j.contains("通关排名")
+            val hasBranch = j.contains("支行网点")
+            val hasPassed = Regex("已通关\\(\\d+\\)").containsMatchIn(j)
+            val hasUnpassed = Regex("未通关\\(\\d+\\)").containsMatchIn(j)
+            complete = hasTitle && hasBranch && hasPassed && hasUnpassed
+            if (complete) break
+            // 服务器报错弹窗：自动点"重试"
+            nodes.firstOrNull { it.text == "重试" || it.text.contains("点击重试") }?.let {
+                LogRepo.log("result", "检测到服务器报错弹窗，点击重试")
+                clickNode(it)
+                sleep(1500)
+            }
             sleep(700)
             loadWaited += 700
             val r = host.root() ?: break
             nodes = ScreenReader.collect(r)
             joined = nodes.joinToString("\n") { it.display }
         }
-        if (loadWaited > 0) LogRepo.log("result", "等待结果页数据加载 ${loadWaited}ms")
+        LogRepo.log(
+            "result",
+            "结果页加载等待 ${loadWaited}ms 完整=$complete" +
+                    (if (!complete) "（超时强制继续）" else "")
+        )
+        host.onStatus(if (complete) "结果加载完成" else "结果加载超时，强制返回")
         val score = nodes.mapNotNull {
             Regex("^\\s*(\\d{1,3})\\s*分\\s*$").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
         }.firstOrNull()
