@@ -1319,8 +1319,25 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     // ================= 06 通关结果 =================
 
-    private fun handleResult(nodes: List<SNode>, joined: String) {
+    private fun handleResult(nodes0: List<SNode>, joined0: String) {
         enterState("RESULT")
+        // 结果页刚打开时数据可能未加载完（24.jpg）：过早点"返回通关列表"会直接
+        // 退出小程序。等排名区加载标志出现（最多10秒）再判定与点击。
+        var nodes = nodes0
+        var joined = joined0
+        var loadWaited = 0
+        while (loadWaited < 10_000 && !stopFlag) {
+            val j = nodes.joinToString("\n") { it.display }
+            if (j.contains("通关排名") || j.contains("支行网点") ||
+                Regex("已通关\\(\\d+\\)").containsMatchIn(j)
+            ) break
+            sleep(700)
+            loadWaited += 700
+            val r = host.root() ?: break
+            nodes = ScreenReader.collect(r)
+            joined = nodes.joinToString("\n") { it.display }
+        }
+        if (loadWaited > 0) LogRepo.log("result", "等待结果页数据加载 ${loadWaited}ms")
         val score = nodes.mapNotNull {
             Regex("^\\s*(\\d{1,3})\\s*分\\s*$").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
         }.firstOrNull()
