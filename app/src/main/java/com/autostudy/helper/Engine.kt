@@ -58,6 +58,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     // ---------- 组件 ----------
     private var tts: TtsPlayer? = null
     private var llm: LlmClient? = null
+    /** AI接口是否已处于"连续失败降级"状态（防止重复告警） */
+    @Volatile private var llmDegraded = false
 
     // ---------- 状态 ----------
     private var state: String? = null
@@ -167,6 +169,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             }
             if (Prefs.llmReady) {
                 llm = LlmClient(LlmConfig(Prefs.llmBaseUrl, Prefs.llmApiKey, Prefs.llmModel))
+                llmDegraded = false
             }
             if (running && g == generation) host.onStatus("运行中")
 
@@ -1084,6 +1087,20 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             if (answer == null && llm != null) {
                 host.onStatus("AI答题中…")
                 answer = llm!!.ask(stemText, opts.map { it.first to it.second }, isMulti)
+                // AI健康监控：连续失败5次（欠费/Key失效的典型特征）告警一次；
+                // 恢复成功时提示并清标志，避免每次都打扰
+                val c = llm!!.consecutiveFails
+                if (c >= 5 && !llmDegraded) {
+                    llmDegraded = true
+                    val reason = llm!!.lastHttpError ?: "未知错误"
+                    LogRepo.log("llm", "AI接口连续失败${c}次，已降级蒙题：$reason")
+                    host.onStatus("⚠ AI接口异常已转蒙题：$reason")
+                    host.vibrate(800)
+                } else if (c == 0 && llmDegraded) {
+                    llmDegraded = false
+                    LogRepo.log("llm", "AI接口已恢复正常")
+                    host.onStatus("AI接口已恢复")
+                }
                 if (answer != null && isMulti && answer!!.length < 2) {
                     LogRepo.log("quiz", "AI多选答案仅${answer}一个字母，视为无效转兜底")
                     answer = null

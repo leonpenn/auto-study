@@ -27,6 +27,14 @@ class LlmClient(private val cfg: LlmConfig) {
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    /** 连续失败计数（成功即清零）：欠费/Key失效的典型特征是持续失败而非偶发 */
+    @Volatile var consecutiveFails = 0
+        private set
+
+    /** 最近一次HTTP错误的用户可读原因（成功时清空），供引擎告警展示 */
+    @Volatile var lastHttpError: String? = null
+        private set
+
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     /** 拼接端点：用户可能填到 /chat/completions 为止，避免重复拼接 */
@@ -86,11 +94,14 @@ class LlmClient(private val cfg: LlmConfig) {
                     val text = resp.body?.string().orEmpty()
                     if (!resp.isSuccessful) {
                         LogRepo.log("llm", "HTTP ${resp.code} attempt=$attempt resp=${text.take(200)}")
+                        lastHttpError = friendlyError(resp.code, text)
                         return@use
                     }
                     val content = parseContent(text)
                     val answer = extractLetters(content)
                     if (answer != null) {
+                        consecutiveFails = 0
+                        lastHttpError = null
                         LogRepo.log("llm", "答案=$answer (${cfg.model})")
                         return answer
                     }
@@ -105,6 +116,7 @@ class LlmClient(private val cfg: LlmConfig) {
                 return null
             }
         }
+        consecutiveFails++
         return null
     }
 
@@ -145,7 +157,22 @@ class LlmClient(private val cfg: LlmConfig) {
         return if (letters.isEmpty()) null else letters.joinToString("")
     }
 
-    /** 设置页"测试连接"。返回 null 表示成功，否则返回错误摘要。 */
+    /** 把HTTP状态码与响应体翻译成用户可读的中文原因 */
+    private fun friendlyError(code: Int, body: String): String {
+        val b = body.lowercase()
+        return when {
+            code == 401 -> "Key 无效或已过期，请检查 API Key"
+            code == 402 || b.contains("arrear") || b.contains("欠费") || b.contains("balance") ->
+                "账号欠费/额度不足，请前往服务商充值"
+            code == 403 -> "无权限（Key 未开通该模型或账号受限）"
+            code == 404 -> "模型名不存在，请检查模型名拼写"
+            code == 429 -> "请求过于频繁或额度耗尽（欠费常见），稍后重试或检查余额"
+            code >= 500 -> "服务商故障（${code}），请稍后再试"
+            else -> "HTTP ${code}: ${body.take(120)}"
+        }
+    }
+
+    /** 设置页"测试连接"。返回 null 表示成功，否则返回用户可读的错误原因。 */
     fun test(): String? {
         return try {
             val body = JSONObject().apply {
@@ -162,10 +189,15 @@ class LlmClient(private val cfg: LlmConfig) {
             client.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (resp.isSuccessful) null
-                else "HTTP ${resp.code}: ${text.take(160)}"
+                else friendlyError(resp.code, text)
             }
         } catch (e: Exception) {
-            "${e.javaClass.simpleName}: ${e.message}"
+            when {
+                e is java.net.UnknownHostException -> "无法解析服务器地址，请检查 BaseURL 或网络"
+                e is java.net.ConnectException || e is java.net.SocketTimeoutException ->
+                    "连接超时/失败，请检查网络或服务器地址"
+                else -> "${e.javaClass.simpleName}: ${e.message}"
+            }
         }
     }
 }
