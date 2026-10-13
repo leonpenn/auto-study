@@ -13,6 +13,7 @@ data class SNode(
     val cls: String,
     val clickable: Boolean,
     val enabled: Boolean,
+    val focused: Boolean,
     val bounds: Rect,
     val node: AccessibilityNodeInfo?
 ) {
@@ -42,7 +43,7 @@ object ScreenReader {
                 val t = n.text?.toString()?.trim().orEmpty()
                 val d = n.contentDescription?.toString()?.trim().orEmpty()
                 if (includeAll || t.isNotEmpty() || d.isNotEmpty() || n.isClickable) {
-                    out.add(SNode(t, d, n.className?.toString().orEmpty(), n.isClickable, n.isEnabled, r, n))
+                    out.add(SNode(t, d, n.className?.toString().orEmpty(), n.isClickable, n.isEnabled, n.isFocused, r, n))
                 }
                 for (i in 0 until n.childCount) {
                     n.getChild(i)?.let { stack.addLast(it) }

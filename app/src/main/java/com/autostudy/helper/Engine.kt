@@ -1296,48 +1296,69 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             return ScreenReader.collect(r, includeAll = true).none { it.text == "通关反馈" }
         }
 
-        // 第1轮（主力）：横向扫描，终点=第5星
-        LogRepo.log("feedback", "横向扫描星级(主力方法)")
-        sweepStars(after, forceFallbackY = false)
-        if (sheetGone()) {
+        /** 提交并验证；返回true=弹层已消失（成功） */
+        fun submitRound(tag: String): Boolean {
+            val r = host.root() ?: return false
+            val cur = ScreenReader.collect(r, includeAll = true)
+            val s = pickSubmit(cur)
+            if (s == null) {
+                LogRepo.log("feedback", "$tag：未找到提交按钮")
+                return false
+            }
+            clickNode(s)
+            sleep(1600)
+            val gone = host.root()?.let {
+                ScreenReader.collect(it, includeAll = true).none { n -> n.text == "通关反馈" }
+            } ?: false
+            LogRepo.log("feedback", "$tag：提交${if (gone) "成功" else "后弹层仍在"}")
+            return gone
+        }
+
+        // 第1轮（主力，v1.0.35已验证模式）：锚点Y带横向扫描 → 立即提交
+        LogRepo.log("feedback", "横向扫描星级(主力)")
+        sweepStars(after)
+        if (submitRound("第1轮扫描后")) {
             LogRepo.log("feedback", "反馈提交成功")
             return
         }
 
-        // 第2轮（补救）：星星节点真实位置点击（第1轮Y带不准时的补救）
-        val fresh = latestCollectInc()
+        // 第2轮：星星节点真实位置点击 → 提交
+        val fresh = host.root()?.let { ScreenReader.collect(it, includeAll = true) } ?: return
         val star = pickStar(fresh)
         if (star != null) {
-            LogRepo.log("feedback", "改用星星节点点击: ${star.bounds}")
+            LogRepo.log("feedback", "第2轮：星星节点点击 ${star.bounds}")
             clickNode(star)
-            sleep(600)
+            sleep(700)
         }
-        if (sheetGone()) {
+        if (submitRound("第2轮节点后")) {
             LogRepo.log("feedback", "反馈提交成功")
             return
         }
 
-        // 第3轮（备用Y带）：屏高82%高度带再扫描
-        LogRepo.log("feedback", "改用备用Y带横向扫描")
-        sweepStars(fresh, forceFallbackY = true)
-        if (sheetGone()) {
+        // 第3轮：锚点扫描再来一次 → 提交
+        LogRepo.log("feedback", "第3轮：再次横向扫描")
+        sweepStars(fresh)
+        if (submitRound("第3轮扫描后")) {
             LogRepo.log("feedback", "反馈提交成功")
             return
         }
 
-        // 提交（评分已在扫描中置为5星；重新采集以定位提交按钮）
-        val finalShot = latestCollectInc()
-        val submit = pickSubmit(finalShot)
-        if (submit != null) {
-            clickNode(submit)
-            sleep(1600)
+        // 兜底：若输入框被聚焦（软键盘弹出），先按返回收起键盘恢复布局，再尝试关闭弹层
+        val rLast = host.root() ?: return
+        val last = ScreenReader.collect(rLast, includeAll = true)
+        if (last.none { it.text == "通关反馈" }) return
+        if (last.any { it.focused }) {
+            LogRepo.log("feedback", "输入框聚焦中，按返回收起键盘")
+            host.back()
+            sleep(1000)
         }
-        if (!sheetGone()) {
-            LogRepo.log("feedback", "3轮未成功，尝试关闭弹层")
-            val close = fresh.firstOrNull {
+        val rLast2 = host.root() ?: return
+        val last2 = ScreenReader.collect(rLast2, includeAll = true)
+        if (last2.any { it.text == "通关反馈" }) {
+            LogRepo.log("feedback", "尝试关闭弹层放行")
+            last2.firstOrNull {
                 it.display == "×" || it.display == "✕" || it.desc.contains("关闭")
-            }
-            close?.let { clickNode(it) }
+            }?.let { clickNode(it) }
             sleep(1200)
         }
     }
@@ -1353,13 +1374,16 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
      * 星级组件以最后一次点击为准——扫描覆盖真实星星行时，最右侧的点即5星。
      * 每点后若弹层消失（提交恰好生效）立即返回。
      */
-    private fun sweepStars(ref: List<SNode>, forceFallbackY: Boolean = false) {
-        val anchor = if (forceFallbackY) null else ref.firstOrNull {
+    private fun sweepStars(ref: List<SNode>) {
+        // Y带只允许锚点定位（评价行下方55px）。82%屏高的"备用Y带"已废弃——
+        // 它与内容输入框重叠，扫描会连点输入框弹出软键盘顶乱布局（v1.0.36事故）
+        val anchor = ref.firstOrNull {
             it.text.contains("请对本次通关") || it.text.contains("进行评价")
+        } ?: run {
+            LogRepo.log("feedback", "无评价行锚点，跳过扫描（防误点输入框）")
+            return
         }
-        val baseY = anchor?.bounds?.bottom?.plus(55f)
-            ?: screenBounds()?.let { it.top + (it.height() * 0.82).toInt() }?.toFloat()
-            ?: return
+        val baseY = anchor.bounds.bottom + 55f
         val sw = screenBounds()?.width() ?: return
         // 扫描区间：屏宽 10%~52%，共 9 个候选点，从左到右（终点偏右=5星）
         val xs = (1..9).map { sw * (0.10f + 0.0525f * it) }
