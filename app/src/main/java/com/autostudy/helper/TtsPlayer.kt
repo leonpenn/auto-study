@@ -18,8 +18,12 @@ class TtsPlayer(private val ctx: Context) {
     private val initLatch = CountDownLatch(1)
     /** 当前朗读的等待闩锁，stop() 时释放让 speakAndWait 立即返回 */
     @Volatile private var speakLatch: CountDownLatch? = null
+    /** 最近一次朗读是否真正开始（onStart 回调），用于预热验证引擎可用性 */
+    @Volatile private var lastUtteranceStarted = false
     var engineName: String = ""
         private set
+
+    fun lastStartOk(): Boolean = lastUtteranceStarted
 
     fun start(enginePackage: String, speed: Float) {
         val listener = TextToSpeech.OnInitListener { status ->
@@ -70,9 +74,13 @@ class TtsPlayer(private val ctx: Context) {
         val clean = text.replace(Regex("[\\n\\r]+"), "。")
         val done = CountDownLatch(1)
         speakLatch = done
+        lastUtteranceStarted = false
         val id = "utt-${System.nanoTime()}"
         t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
+            override fun onStart(utteranceId: String?) {
+                if (utteranceId == id) lastUtteranceStarted = true
+            }
+
             override fun onDone(utteranceId: String?) {
                 if (utteranceId == id) done.countDown()
             }
@@ -119,37 +127,83 @@ class TtsPlayer(private val ctx: Context) {
     }
 
     companion object {
-        /** 检测指定（或默认）引擎是否可用、是否支持中文，供设置页用。 */
+        /**
+         * 检测指定（或默认）引擎是否可用。在后台线程执行完整实测：
+         * 1) 初始化引擎（最多8秒）
+         * 2) setLanguage(中文) 记录声明值（部分新引擎如 ColorOS16 会误报 -2，
+         *    声明值只作参考不作结论）
+         * 3) 真实 speak("测试") 并等待开始朗读回调（最多6秒）——实测能开口即判定可用
+         */
         fun probe(ctx: Context, enginePackage: String, onResult: (ok: Boolean, engine: String, msg: String) -> Unit) {
-            val t = if (enginePackage.isBlank()) {
-                TextToSpeech(ctx.applicationContext) { }
-            } else {
+            Thread {
+                var t: TextToSpeech? = null
+                var engineName = enginePackage.ifBlank { "系统默认" }
+                var setCode = Int.MIN_VALUE
+                var speakStarted = false
                 try {
-                    TextToSpeech(ctx.applicationContext, { }, enginePackage)
+                    val initLatch = CountDownLatch(1)
+                    var initOk = false
+                    t = if (enginePackage.isBlank()) {
+                        TextToSpeech(ctx.applicationContext) { status -> initOk = status == TextToSpeech.SUCCESS; initLatch.countDown() }
+                    } else {
+                        try {
+                            TextToSpeech(ctx.applicationContext, { status -> initOk = status == TextToSpeech.SUCCESS; initLatch.countDown() }, enginePackage)
+                        } catch (e: Exception) {
+                            onResult(false, enginePackage, "无法加载引擎: ${e.message}")
+                            return@Thread
+                        }
+                    }
+                    val initInTime = initLatch.await(8, TimeUnit.SECONDS)
+                    if (!initInTime || !initOk) {
+                        onResult(false, t?.defaultEngine ?: engineName, "引擎初始化${if (initInTime) "失败" else "超时"}")
+                        return@Thread
+                    }
+                    engineName = t.defaultEngine ?: engineName
+                    try {
+                        setCode = t.setLanguage(Locale.SIMPLIFIED_CHINESE)
+                    } catch (e: Exception) {
+                        setCode = Int.MIN_VALUE
+                    }
+                    // 真实朗读测试：以 onStart 回调为"能开口"的证据
+                    val testLatch = CountDownLatch(1)
+                    val testId = "probe-test"
+                    t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            if (utteranceId == testId) { speakStarted = true; testLatch.countDown() }
+                        }
+
+                        override fun onDone(utteranceId: String?) {
+                            if (utteranceId == testId) testLatch.countDown()
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            if (utteranceId == testId) testLatch.countDown()
+                        }
+                    })
+                    val accepted = try {
+                        t.speak("测试。", TextToSpeech.QUEUE_FLUSH, null, testId) != TextToSpeech.ERROR
+                    } catch (e: Exception) {
+                        false
+                    }
+                    if (accepted) {
+                        speakStarted = testLatch.await(6, TimeUnit.SECONDS)
+                    }
+                    val msg = if (speakStarted) {
+                        if (setCode >= 0) "支持中文" else "引擎未声明中文(set=$setCode)，实测可朗读"
+                    } else {
+                        "实测朗读失败(set=$setCode)"
+                    }
+                    onResult(speakStarted, engineName, msg)
                 } catch (e: Exception) {
-                    onResult(false, enginePackage, "无法加载引擎: ${e.message}")
-                    return
+                    onResult(speakStarted, engineName, "检测异常: ${e.message}")
+                } finally {
+                    try {
+                        t?.shutdown()
+                    } catch (_: Exception) {
+                    }
                 }
-            }
-            t.setOnUtteranceProgressListener(null)
-            val handler = android.os.Handler(android.os.Looper.getMainLooper())
-            handler.postDelayed({
-                var ok = false
-                var msg: String
-                try {
-                    val set = t.setLanguage(Locale.SIMPLIFIED_CHINESE)
-                    ok = set >= 0 // LANG 或 LANG_AVAILABLE
-                    msg = if (ok) "支持中文" else "不支持中文(set=$set)"
-                } catch (e: Exception) {
-                    msg = "检测异常: ${e.message}"
-                }
-                val name = t.defaultEngine ?: enginePackage
-                try {
-                    t.shutdown()
-                } catch (_: Exception) {
-                }
-                onResult(ok, name, msg)
-            }, 2500)
+            }.start()
         }
     }
 }

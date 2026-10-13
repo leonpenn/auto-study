@@ -155,8 +155,15 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             LogRepo.log("engine", "TTS就绪=$ttsOk")
             if (!ttsOk) host.onStatus("⚠ TTS语音引擎不可用，无法朗读")
             if (ttsOk) {
-                // 预热：首次合成常有延迟，先空读一词，避免第一段录音只录到半截
+                // 预热：首次合成常有延迟，先空读一词，避免第一段录音只录到半截；
+                // 同时验证引擎真能开口（部分引擎声明不支持中文但实测可朗读）
                 player.speakAndWait("预热")
+                val started = player.lastStartOk()
+                LogRepo.log("engine", "预热朗读 started=$started")
+                if (!started) {
+                    host.onStatus("⚠ TTS预热未开口，建议安装第三方语音引擎")
+                    host.vibrate(600)
+                }
             }
             if (Prefs.llmReady) {
                 llm = LlmClient(LlmConfig(Prefs.llmBaseUrl, Prefs.llmApiKey, Prefs.llmModel))
