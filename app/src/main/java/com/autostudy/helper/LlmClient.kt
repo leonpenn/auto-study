@@ -116,6 +116,9 @@ class LlmClient(private val cfg: LlmConfig) {
                 return null
             }
         }
+        // 失败分类：HTTP错误已记录具体原因；其余（解析失败/网络异常）给出通用原因，
+        // 避免引擎告警时显示"未知错误"
+        if (lastHttpError == null) lastHttpError = "模型输出无法解析（格式异常）或网络异常"
         consecutiveFails++
         return null
     }

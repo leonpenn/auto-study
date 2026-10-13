@@ -92,6 +92,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private var lastLearnX: String? = null       // 学习进度x，前进时刷新看门狗
     private var lastQuizStem: String? = null     // 当前小测题干，切题时刷新看门狗
     private var quizSubmitSig: String? = null    // 已点过"提交"的题干（防重复提交；重试/换题时复位）
+    private var quizSubmitWaits = 0              // 提交后等待跳转的轮数（8轮上限后允许重新提交）
     private val answeredStems = LinkedHashSet<String>() // 本专题已作答过的题
 
     // ---------- 统计 ----------
@@ -388,6 +389,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         lastLearnX = null
         lastQuizStem = null
         quizSubmitSig = null
+        quizSubmitWaits = 0
         passedAwaitingAdvance = null
         passAdvanceFails = 0
         quizRetries = 0
@@ -468,6 +470,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         lastLearnX = null
         lastQuizStem = null
         quizSubmitSig = null
+        quizSubmitWaits = 0
         resultCounted = false
         passedAwaitingAdvance = null
         passAdvanceFails = 0
@@ -477,7 +480,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         host.onStatus("刷: ${topicTitle.take(18)}")
         clickNode(card)
         sleep(rand(1500L, 2600L))
-        enterState(null)
     }
 
     /** 兜底找卡片：标签行下方最上方的"标题样"文本（排除元数据行） */
@@ -518,7 +520,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             LogRepo.log("desc", "点击[立即开始]")
             clickNode(go)
             sleep(rand(1400L, 2400L))
-            enterState(null)
         } else {
             sleep(1000)
         }
@@ -543,7 +544,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             if (patientAdvance(30_000L)) {
                 learningFailStreak = 0
                 sleep(rand(900L, 1600L))
-                enterState(null)
             } else {
                 sleep(1200)
             }
@@ -587,7 +587,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 itemFailSig = null
                 itemFailCount = 0
                 sleep(rand(900L, 1600L))
-                enterState(null)
             } else {
                 passAdvanceFails++
                 // 刷新看门狗：重试期间不算卡死
@@ -615,7 +614,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             // 已通过待翻页时不标记"已读"（翻页成功后才标记）
             if (passedAwaitingAdvance == null) lastLearnedSig = sig
             sleep(rand(900L, 1600L))
-            enterState(null)
         } else {
             // 同一道题推进失败计数：超过2轮直接跳过该专题，绝不无限重读
             if (itemFailSig != sig) {
@@ -795,7 +793,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private fun patientAdvance(maxWaitMs: Long): Boolean {
         val start = System.currentTimeMillis()
         var lastClick = 0L
-        val beforeX = host.root()?.let { learningSig(ScreenReader.collect(it)).first } ?: -2
+        val beforeX = host.root()?.let { learningSig(ScreenReader.collect(it)) } ?: -2
         while (System.currentTimeMillis() - start < maxWaitMs && !stopFlag) {
             val root = host.root()
             if (root == null) {
@@ -807,7 +805,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val quizOrResult = j.contains("【单选】") || j.contains("【多选】") || j.contains("【判断】") ||
                     j.contains("通关反馈") || j.contains("通关结果")
             if (quizOrResult) return true
-            val afterX = learningSig(nodes).first
+            val afterX = learningSig(nodes)
             if (afterX > beforeX) return true
             if (latestReadVerdict(nodes) == "fail") {
                 LogRepo.log("learn", "推进中出现未通过标识，转重录")
@@ -985,17 +983,15 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             if (j3.contains("【单选】") || j3.contains("【多选】") || j3.contains("【判断】") ||
                 j3.contains("通关反馈") || j3.contains("通关结果")
             ) return true
-            if (learningSig(n3).first > beforeX) return true
+            if (learningSig(n3) > beforeX) return true
         }
         return false
     }
 
-    private fun learningSig(nodes: List<SNode>): Pair<Int, String> {
+    /** 学习进度号x（"学习(x/y)"），无进度头返回-1 */
+    private fun learningSig(nodes: List<SNode>): Int {
         val m = Regex("学习\\((\\d+)/(\\d+)\\)").find(nodes.joinToString(" ") { it.display })
-        val x = m?.groupValues?.get(1)?.toIntOrNull() ?: -1
-        val label = nodes.filter { it.text.length in 6..40 && !it.text.contains("请朗读") }
-            .minByOrNull { it.bounds.top }?.text?.take(20).orEmpty()
-        return x to label
+        return m?.groupValues?.get(1)?.toIntOrNull() ?: -1
     }
 
     /** 把当前屏幕的文本节点摘要写进日志（同一key只dump一次，全局限频防刷屏），远程排查用 */
@@ -1068,6 +1064,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         if (stemText != lastQuizStem) {
             stateEnter = System.currentTimeMillis()
             lastQuizStem = stemText
+            quizSubmitWaits = 0
         }
         updateDetail("小测：${stemText.take(24)}")
         LogRepo.log("quiz", "题干=$stemText 选项=${availableLetters.joinToString("")}")
@@ -1141,11 +1138,19 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         }
 
         // ---------- 下一题 / 提交 ----------
-        // 已提交过小测且尚未翻页：只等待，绝不重复点提交（A4修复，防重复提交）
+        // 已提交过小测且尚未翻页：只等待，绝不重复点提交（A4修复，防重复提交）；
+        // 但等待有上限（8轮约16秒+开销），超时清除标记允许重点提交，
+        // 且状态保持QUIZ让看门狗可超时兜底（不再enterState(null)翻转复位）
         if (quizSubmitSig == stemKey) {
-            LogRepo.log("quiz", "本题已提交过，等待服务器跳转")
-            sleep(2000)
-            enterState(null)
+            quizSubmitWaits++
+            if (quizSubmitWaits >= 8) {
+                quizSubmitWaits = 0
+                quizSubmitSig = null
+                LogRepo.log("quiz", "提交后长时间未跳转，清除标记允许重新提交")
+            } else {
+                LogRepo.log("quiz", "本题已提交过，等待服务器跳转(${quizSubmitWaits}/8)")
+                sleep(2000)
+            }
             return
         }
         val btn = findNextButton(nodes)
@@ -1156,7 +1161,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 LogRepo.log("quiz", "未找到底部按钮，按记忆位置点击推进")
                 host.tap(memo.x, memo.y)
                 sleep(rand(1500L, 2500L))
-                enterState(null)
                 return
             }
             LogRepo.log("quiz", "未找到[下一题/提交]，滚动")
@@ -1209,7 +1213,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val j2 = n2.joinToString("\n") { it.display }
             if (!j2.contains(stemText.take(10)) || j2.contains("通关反馈") || j2.contains("通关结果")) break
         }
-        enterState(null)
     }
 
     private fun guessAnswer(isMulti: Boolean, available: List<Char>, exclude: Set<String>): String {
@@ -1307,7 +1310,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         val after3 = ScreenReader.collect(root3, includeAll = true)
         if (!after3.joinToString("\n") { it.display }.contains("通关反馈")) {
             LogRepo.log("feedback", "反馈提交成功")
-            enterState(null)
             return
         }
         LogRepo.log("feedback", "反馈仍在，补点星级后重试提交")
@@ -1337,7 +1339,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val after5 = ScreenReader.collect(root5, includeAll = true)
             if (!after5.joinToString("\n") { it.display }.contains("通关反馈")) {
                 LogRepo.log("feedback", "扫描轮提交成功")
-                enterState(null)
                 return
             }
             LogRepo.log("feedback", "扫描后仍未提交，尝试关闭弹层")
@@ -1347,7 +1348,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             close?.let { clickNode(it) }
             sleep(1200)
         }
-        enterState(null)
     }
 
     /**
@@ -1438,6 +1438,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             lastLearnX = null
             lastQuizStem = null
             quizSubmitSig = null
+            quizSubmitWaits = 0
             quizRetries = 0
             val back = ScreenReader.findByContains(nodes, "返回通关列表")
             if (back != null) {
@@ -1451,7 +1452,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             LogRepo.log("engine", "专题完成，休息${rest / 1000}s")
             sleep(rest)
             topicTitle = ""
-            enterState(null)
         } else {
             // 记录错题，重试时避开
             topicAnswers.forEach { (k, v) ->
@@ -1467,6 +1467,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 lastLearnX = null
                 lastQuizStem = null
                 quizSubmitSig = null
+                quizSubmitWaits = 0
                 val retry = ScreenReader.findByContains(nodes, "重新通关")
                 if (retry != null) {
                     clickNode(retry)
@@ -1480,9 +1481,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                             sleep(1200)
                         }
                     }
-                    enterState(null)
                 } else {
-                    host.back(); sleep(1500); enterState(null)
+                    host.back(); sleep(1500)
                 }
             } else {
                 if (!resultCounted) {
@@ -1498,7 +1498,6 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 topicTitle = ""
                 topicAnswers.clear()
                 quizRetries = 0
-                enterState(null)
             }
         }
     }
