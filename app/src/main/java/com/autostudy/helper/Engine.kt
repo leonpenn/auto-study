@@ -1245,8 +1245,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         fun pickStar(list: List<SNode>): SNode? = list.filter {
             it.visible && it.bounds.top > sheetTop + 150 &&
                     it.bounds.width() in 30..200 && it.bounds.height() in 30..200 &&
-                    it.text.isEmpty() &&
-                    (it.desc.contains("星") || it.desc.contains("star") || true)
+                    it.text.isEmpty()
         }.maxByOrNull { it.bounds.left }
 
         fun pickSubmit(list: List<SNode>): SNode? =
@@ -1395,7 +1394,10 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                     (if (!complete) "（超时强制继续）" else "")
         )
         host.onStatus(if (complete) "结果加载完成" else "结果加载超时，强制返回")
-        val score = nodes.mapNotNull {
+        // 成绩节点限定在屏幕上部60%区域内取——排名列表（含他人"NN分"独立节点）
+        // 位于页面下方，树序在前的排名条目可能被误当成本次成绩
+        val scoreTopLimit = screenBounds()?.let { it.top + (it.height() * 0.60).toInt() } ?: Int.MAX_VALUE
+        val score = nodes.filter { it.visible && it.bounds.top < scoreTopLimit }.mapNotNull {
             Regex("^\\s*(\\d{1,3})\\s*分\\s*$").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
         }.firstOrNull()
             ?: Regex("首次通关成绩\\s*(\\d{1,3})\\s*分").find(joined)?.groupValues?.get(1)?.toIntOrNull()

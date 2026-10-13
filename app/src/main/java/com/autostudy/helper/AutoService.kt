@@ -236,11 +236,9 @@ class AutoService : AccessibilityService(), Engine.EngineHost {
      *    取离"底部居中(50%, 89.5%)"最近的候选
      */
     private fun findMicOnScreen(): PointF? {
-        val root = try {
-            rootInActiveWindow
-        } catch (_: Exception) {
-            null
-        } ?: return null
+        // 用防抢占的 root()（与引擎读取同源）：活动窗口被悬浮窗抢占时
+        // 不至于读到自己的面板树导致话筒识别失效
+        val root = root() ?: return null
         val win = Rect()
         root.getBoundsInScreen(win)
         if (win.isEmpty) return null
@@ -316,12 +314,10 @@ class AutoService : AccessibilityService(), Engine.EngineHost {
         }
     }
 
+    /** 屏幕基准：与 root() 同源取窗边界（微信窗口），保证"下一题"位置记忆的
+     *  写入与复现使用同一基准——混用活动窗口/全屏metrics会差一个状态栏高度 */
     private fun screenRect(): Rect {
-        val root = try {
-            rootInActiveWindow
-        } catch (_: Exception) {
-            null
-        }
+        val root = root()
         if (root != null) {
             val r = Rect()
             root.getBoundsInScreen(r)
