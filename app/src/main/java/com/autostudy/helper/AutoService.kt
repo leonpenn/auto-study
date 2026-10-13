@@ -104,15 +104,23 @@ class AutoService : AccessibilityService(), Engine.EngineHost {
         if (usableRoot(active) && pkgOf(active) != ourPkg) {
             return active
         }
+        // 兜底：窗口列表里选"节点最多的微信窗口"——首次冷启动时可能同时存在
+        // 加载壳窗口（节点极少）与真实小程序窗口，取最大者避开退化壳
         return try {
-            windows.firstOrNull { w ->
+            windows.mapNotNull { w ->
                 val r = try {
                     w.root
                 } catch (_: Exception) {
                     null
                 }
-                usableRoot(r) && pkgOf(r) == "com.tencent.mm"
-            }?.root
+                if (usableRoot(r) && pkgOf(r) == "com.tencent.mm") r else null
+            }.maxByOrNull {
+                try {
+                    it.childCount
+                } catch (_: Exception) {
+                    0
+                }
+            }
         } catch (_: Exception) {
             null
         }
