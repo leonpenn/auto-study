@@ -45,6 +45,8 @@ class LlmClient(private val cfg: LlmConfig) {
 
     private fun systemPrompt(isMulti: Boolean): String =
         "你是银行保险话术学习小测的答题助手。根据给定的题目和选项，给出正确答案。" +
+                "答题时优先依据用户消息中提供的【学习材料】（本专题官方学习原文）；" +
+                "材料未涵盖的部分，再用你自己的知识判断。" +
                 (if (isMulti) {
                     "注意：这是多选题，正确答案有2个及以上选项，必须全部选出，" +
                             "绝不能只给1个选项。"
@@ -62,8 +64,13 @@ class LlmClient(private val cfg: LlmConfig) {
     private fun userPrompt(
         stem: String,
         options: List<Pair<String, String>>,
-        isMulti: Boolean
+        isMulti: Boolean,
+        materials: List<String>
     ): String = buildString {
+        if (materials.isNotEmpty()) {
+            appendLine("【学习材料】以下是本专题的官方学习原文，答题优先以其为准：")
+            materials.forEachIndexed { i, m -> appendLine("材料${i + 1}：$m") }
+        }
         if (isMulti) appendLine("（多选题，正确答案有2个及以上选项，必须全部选出）")
         appendLine("题目：${stem}")
         options.forEach { (letter, text) -> appendLine("$letter、$text") }
@@ -73,14 +80,20 @@ class LlmClient(private val cfg: LlmConfig) {
     /**
      * 请求答案。返回形如 "AC" 的大写字母串；失败返回 null（调用方走蒙题兜底）。
      */
-    fun ask(stem: String, options: List<Pair<String, String>>, isMulti: Boolean): String? {
+    fun ask(
+        stem: String,
+        options: List<Pair<String, String>>,
+        isMulti: Boolean,
+        materials: List<String> = emptyList()
+    ): String? {
         val body = JSONObject().apply {
             put("model", cfg.model)
             put("temperature", 0.1)
             put("max_tokens", 100)
             put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", systemPrompt(isMulti)))
-                .put(JSONObject().put("role", "user").put("content", userPrompt(stem, options, isMulti))))
+                .put(JSONObject().put("role", "user")
+                    .put("content", userPrompt(stem, options, isMulti, materials))))
         }
         repeat(2) { attempt ->
             try {

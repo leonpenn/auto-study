@@ -94,6 +94,9 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private var quizSubmitSig: String? = null    // 已点过"提交"的题干（防重复提交；重试/换题时复位）
     private var quizSubmitWaits = 0              // 提交后等待跳转的轮数（8轮上限后允许重新提交）
     private val answeredStems = LinkedHashSet<String>() // 本专题已作答过的题
+    /** 本专题朗读原文（小测AI答题参考材料；专题通过/跳过/换专题后清除） */
+    private val topicReadings = ArrayList<String>()
+    private val topicReadingsCap = 12000         // 材料总字数上限（防极端长专题撑爆请求）
 
     // ---------- 统计 ----------
     @Volatile var statCompleted = 0; private set
@@ -385,6 +388,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         topicTitle = ""
         topicAnswers.clear()
         answeredStems.clear()
+        topicReadings.clear()
         lastLearnedSig = null
         lastLearnX = null
         lastQuizStem = null
@@ -466,6 +470,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         micMode = 1
         micModeTriedHold = false
         answeredStems.clear()
+        topicReadings.clear()
         lastLearnedSig = null
         lastLearnX = null
         lastQuizStem = null
@@ -611,6 +616,10 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             learningFailStreak = 0
             itemFailSig = null
             itemFailCount = 0
+            // 暂存本条朗读原文，供小测阶段AI答题参考（总量超上限后不再追加）
+            if (topicReadings.sumOf { it.length } < topicReadingsCap) {
+                topicReadings.add(content)
+            }
             // 已通过待翻页时不标记"已读"（翻页成功后才标记）
             if (passedAwaitingAdvance == null) lastLearnedSig = sig
             sleep(rand(900L, 1600L))
@@ -1083,7 +1092,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             }
             if (answer == null && llm != null) {
                 host.onStatus("AI答题中…")
-                answer = llm!!.ask(stemText, opts.map { it.first to it.second }, isMulti)
+                answer = llm!!.ask(stemText, opts.map { it.first to it.second }, isMulti, topicReadings.toList())
                 // AI健康监控：连续失败5次（欠费/Key失效的典型特征）告警一次；
                 // 恢复成功时提示并清标志，避免每次都打扰
                 val c = llm!!.consecutiveFails
@@ -1437,6 +1446,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             LogRepo.log("engine", "专题完成，休息${rest / 1000}s")
             sleep(rest)
             topicTitle = ""
+            // 小测顺利通过：本轮朗读材料已完成使命，清除（用户指定）
+            topicReadings.clear()
         } else {
             // 记录错题，重试时避开
             topicAnswers.forEach { (k, v) ->
@@ -1485,6 +1496,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 sleep(rand(1500L, 2500L))
                 topicTitle = ""
                 topicAnswers.clear()
+                topicReadings.clear()
                 quizRetries = 0
             }
         }
