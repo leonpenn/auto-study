@@ -1268,56 +1268,63 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     /**
      * 通关反馈：先点最后一颗星（5星好评），再点提交。
-     * 星星定位失败时横向扫描（扫描终点=第5星）；提交前检测"请选择评分"
-     * 提示（星星点击未生效，41.jpg）——出现则立即再扫描补正后再提交，
-     * 绝不带着未生效的评分浪费提交。3轮未成功尝试关闭弹层放行。
+     * 三层递进：① 星星节点取最右；② 几何单点（评价行锚点+屏宽40%）；
+     * ③ 横向扫描9点（终点偏右=5星，无条件执行——系统Toast不在无障碍树里，
+     * 不能依赖"请选择评分"提示做检测，v1.0.33曾因此回归）。
+     * 任一轮提交成功即结束；3轮未成功尝试关闭弹层放行。
      */
     private fun handleFeedback(nodes: List<SNode>) {
         enterState("FEEDBACK")
         updateDetail("通关反馈弹窗")
-        var attempt = 0
-        while (attempt++ < 3 && !stopFlag) {
+
         val root = host.root() ?: return
         val after = ScreenReader.collect(root, includeAll = true)
-        if (after.none { it.text == "通关反馈" }) {
-            LogRepo.log("feedback", "反馈提交成功")
-            return
-        }
-        val sheetTop = after.filter { it.text == "通关反馈" }.maxOfOrNull { it.bounds.top } ?: return
+        val sheetTop = after.filter { it.text == "通关反馈" }.maxOfOrNull { it.bounds.top }
+            ?: nodes.filter { it.text == "通关反馈" }.maxOfOrNull { it.bounds.top }
+            ?: return
 
-        // 1) 星级：星星节点取最右（第5星）；无节点则横向扫描
-        val star = after.filter {
+        fun pickStar(list: List<SNode>): SNode? = list.filter {
             it.visible && it.bounds.top > sheetTop + 150 &&
                     it.bounds.width() in 30..200 && it.bounds.height() in 30..200 &&
                     it.text.isEmpty()
         }.maxByOrNull { it.bounds.left }
+
+        fun pickSubmit(list: List<SNode>): SNode? =
+            list.filter { it.text == "提交" }.maxByOrNull { it.bounds.bottom }
+
+        fun starFallbackPoint(): PointF? {
+            val anchor = after.firstOrNull {
+                it.text.contains("请对本次通关") || it.text.contains("进行评价")
+            } ?: return null
+            val sw = screenBounds()?.width() ?: return null
+            // 第5颗星：5星行靠左排列，占屏宽约40%，最后一颗中心约在屏宽40%处
+            return PointF(sw * 0.40f, anchor.bounds.bottom + 55f)
+        }
+
+        // 1) 最后一颗星 = 好评
+        val star = pickStar(after)
         if (star != null) {
             LogRepo.log("feedback", "点击最后一颗星(好评): ${star.bounds}")
             clickNode(star)
             sleep(600)
         } else {
-            LogRepo.log("feedback", "无星星节点，横向扫描星级")
-            sweepStars(after)
-        }
-
-        // 星级未生效检测：出现"请选择评分"提示（星星点击未落到位）→
-        // 立即横向扫描补正，绝不带着未生效的评分浪费提交
-        var latest = latestCollect()
-        if (latest.any { it.text.contains("请选择评分") }) {
-            LogRepo.log("feedback", "星级未生效(请选择评分)，扫描补正")
-            sweepStars(latest)
-            latest = latestCollect()
+            val p = starFallbackPoint()
+            if (p != null) {
+                LogRepo.log("feedback", "未找到星星节点，按几何位置点击第5星: $p")
+                host.tap(p.x, p.y)
+                sleep(600)
+            } else {
+                LogRepo.log("feedback", "未定位到星级（无节点无锚点），直接提交")
+            }
         }
 
         // 2) 提交
-        val submit = latest.filter { it.text == "提交" }.maxByOrNull { it.bounds.bottom }
+        val submit = pickSubmit(after)
         if (submit == null) {
-            sleep(1000)
-            continue
+            sleep(1000); return
         }
         clickNode(submit)
         sleep(1600)
-        }
 
         // 3) 验证：弹层仍在则补一轮（几何星级→提交），仍卡住尝试关闭
         val root3 = host.root() ?: return
@@ -1326,22 +1333,40 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             LogRepo.log("feedback", "反馈提交成功")
             return
         }
-        // 3轮失败：尝试关闭弹层放行（评分非必填时可行；必填时看门狗兜底）
-        val r = host.root() ?: return
-        val last = ScreenReader.collect(r, includeAll = true)
-        if (last.any { it.text == "通关反馈" }) {
-            LogRepo.log("feedback", "3轮未成功，尝试关闭弹层")
-            last.firstOrNull {
+        LogRepo.log("feedback", "反馈仍在，补点星级后重试提交")
+        val star2 = pickStar(after3)
+        if (star2 != null) {
+            clickNode(star2)
+            sleep(600)
+        } else {
+            starFallbackPoint()?.let {
+                host.tap(it.x, it.y)
+                sleep(600)
+            }
+        }
+        pickSubmit(after3)?.let { clickNode(it) }
+        sleep(1600)
+        val root4 = host.root() ?: return
+        val after4 = ScreenReader.collect(root4, includeAll = true)
+        if (after4.joinToString("\n") { it.display }.contains("通关反馈")) {
+            // 第三轮：无条件横向扫描（可靠兜底，扫描终点=第5星）
+            LogRepo.log("feedback", "两轮未成功，启动横向扫描星级")
+            sweepStars(after3)
+            pickSubmit(after3)?.let { clickNode(it) }
+            sleep(1600)
+            val root5 = host.root() ?: return
+            val after5 = ScreenReader.collect(root5, includeAll = true)
+            if (!after5.joinToString("\n") { it.display }.contains("通关反馈")) {
+                LogRepo.log("feedback", "扫描轮提交成功")
+                return
+            }
+            LogRepo.log("feedback", "扫描后仍未提交，尝试关闭弹层")
+            val close = after5.firstOrNull {
                 it.display == "×" || it.display == "✕" || it.desc.contains("关闭")
-            }?.let { clickNode(it) }
+            }
+            close?.let { clickNode(it) }
             sleep(1200)
         }
-    }
-
-    /** 采集当前屏幕（含无文字图标节点） */
-    private fun latestCollect(): List<SNode> {
-        val r = host.root() ?: return emptyList()
-        return ScreenReader.collect(r, includeAll = true)
     }
 
     /**
