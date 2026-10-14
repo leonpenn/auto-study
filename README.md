@@ -24,10 +24,10 @@
 
 ```
 JDK17 + Android SDK (platform 34) + Gradle 8.7
-./gradlew assembleRelease   （签名证书在 keystore/，密码见 app/build.gradle）
+./gradlew assembleRelease   （签名信息在本地 keystore.properties，不入库；克隆后需自行创建）
 ```
 
-> ⚠️ 签名证书（keystore/auto-study.jks）与本仓库一同备份，请勿用于正式对外发布的产品；若仓库转为公开请先移除。
+> ⚠️ 签名证书与密码已从仓库移除（本地 keystore.properties 保管）。克隆仓库后需自行创建 keystore.properties 才能签名构建。
 
 ## 免责声明
 

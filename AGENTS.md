@@ -11,4 +11,10 @@
 ## 版本发布
 
 - `versionCode` 单调递增（覆盖安装依赖）；`versionName` 与发布 tag 一致；
-- 每次发版同步更新：`使用说明.md` 版本表、`产品设计开发文档.md` 版本表、`release/` 下 APK（中文+ASCII 各一份）。
+- 每次发版同步更新：`使用说明.md` 版本表、`产品设计开发文档.md` 版本表、`release/` 下 APK（中文+ASCII 各一份）；
+- **签名信息不入库**：keystore.jks 与 keystore.properties（含密码）已被 .gitignore 排除、由 Leon 本地保管；clone 后需自建 keystore.properties 才能签名构建（格式见 app/build.gradle 读取逻辑）。
+
+## 构建环境
+
+- 本项目已改用用户级共享构建环境：`C:\Users\Leon\android-build-tools\`（JDK17/SDK/Gradle，环境变量 JAVA_HOME、ANDROID_HOME 已指向），项目内 build-env/ 已废弃删除；
+- local.properties 的 sdk.dir 指向 `C:/Users/Leon/android-build-tools/sdk`。

@@ -3,6 +3,13 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// 签名信息本地保管（keystore.properties 不入库，防泄露）
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file("keystore.properties")
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace 'com.autostudy.helper'
     compileSdk 34
@@ -17,10 +24,10 @@ android {
 
     signingConfigs {
         release {
-            storeFile file("../keystore/auto-study.jks")
-            storePassword "autostudy2026"
-            keyAlias "autostudy"
-            keyPassword "autostudy2026"
+            storeFile file(keystoreProps['storeFile'])
+            storePassword keystoreProps['storePassword']
+            keyAlias keystoreProps['keyAlias']
+            keyPassword keystoreProps['keyPassword']
         }
     }
 
