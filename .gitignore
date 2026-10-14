@@ -1,5 +1,5 @@
 # 构建环境与本地产物（体积大/机器相关，不入库）
-build-env/
+# 构建工具链已迁至 C:\Users\Leon\android-build-tools（用户级环境变量 JAVA_HOME/ANDROID_HOME 已指向）
 app/build/
 .gradle/
 build/
