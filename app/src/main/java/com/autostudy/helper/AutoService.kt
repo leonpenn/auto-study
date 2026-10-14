@@ -173,10 +173,25 @@ class AutoService : AccessibilityService(), Engine.EngineHost {
         }
     }
 
-    override fun back(): Boolean = try {
-        performGlobalAction(GLOBAL_ACTION_BACK)
-    } catch (_: Exception) {
-        false
+    override fun back(): Boolean {
+        // 防退出保护：若当前屏幕是微信主页（四个主标签齐全），返回键会退出
+        // 小程序/无意义——拒绝执行（结果页等最后一页的back曾直接退出小程序）
+        return try {
+            val r = root()
+            if (r != null) {
+                val nodes = ScreenReader.collect(r)
+                val isWeChatHome = listOf("消息", "通讯录", "发现", "我").all { k ->
+                    nodes.any { it.text == k }
+                }
+                if (isWeChatHome) {
+                    LogRepo.log("svc", "拦截back：当前在微信主页（返回会退出小程序）")
+                    return false
+                }
+            }
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     override fun swipeUp(): Boolean {

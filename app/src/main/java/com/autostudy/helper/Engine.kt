@@ -1419,7 +1419,9 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val hasBranch = j.contains("支行网点")
             val hasPassed = Regex("已通关\\(\\d+\\)").containsMatchIn(j)
             val hasUnpassed = Regex("未通关\\(\\d+\\)").containsMatchIn(j)
-            complete = hasTitle && hasBranch && hasPassed && hasUnpassed
+            // 失败结果页没有"通关排名"标题（44.jpg实证），不强等它：
+            // 排名表+两个计数齐备即视为加载完成
+            complete = hasBranch && hasPassed && hasUnpassed
             if (complete) break
             sleep(700)
             loadWaited += 700
@@ -1493,10 +1495,32 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 quizSubmitSig = null
                 quizSubmitWaits = 0
                 // 失败结果页按钮为"再次挑战"（40.jpg，点击直接回到小测阶段，
-                // 不重做朗读）；旧文案"重新通关"保留兼容
-                val retry = ScreenReader.findByContains(nodes, "再次挑战")
-                    ?: ScreenReader.findByContains(nodes, "重新通关")
-                if (retry != null) {
+                // 不重做朗读）；旧文案"重新通关"保留兼容。
+                // 结果页加载中树可能塌缩（45.jpg实证root=1节点时找不到按钮、
+                // back()会退出小程序）：轮询15秒专等按钮，塌缩自动poke，
+                // 找不到则暂停（绝不back()）
+                var waited = 0
+                var retry: SNode? = null
+                while (waited < 15_000 && !stopFlag) {
+                    val r = host.root()
+                    if (r == null) {
+                        sleep(700)
+                        waited += 700
+                        continue
+                    }
+                    val nn = ScreenReader.collect(r)
+                    retry = ScreenReader.findByContains(nn, "再次挑战")
+                        ?: ScreenReader.findByContains(nn, "重新通关")
+                    if (retry != null && retry.visible) break
+                    if (nn.size < 25 && waited % 3000 == 0) {
+                        LogRepo.log("result", "树塌缩(${nn.size}节点)，poke自愈")
+                        host.poke()
+                    }
+                    sleep(700)
+                    waited += 700
+                }
+                if (retry != null && retry.visible) {
+                    LogRepo.log("result", "点击[再次挑战]")
                     clickNode(retry)
                     sleep(rand(2000L, 3000L))
                     // 可能出现"确认重新通关"弹窗
@@ -1509,7 +1533,10 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                         }
                     }
                 } else {
-                    host.back(); sleep(1500)
+                    LogRepo.log("result", "15秒未找到[再次挑战]按钮，暂停等待人工")
+                    host.onStatus("⚠ 未找到再次挑战按钮，已暂停")
+                    host.vibrate(800)
+                    paused = true
                 }
             } else {
                 if (!resultCounted) {
@@ -1583,6 +1610,15 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         // 微信主页？
         val wechatHome = listOf("消息", "通讯录", "发现", "我").all { k -> nodes.any { it.text == k } }
         if (wechatHome) {
+            if (topicTitle.isNotEmpty()) {
+                // 任务中意外退出小程序（如back触发）：暂停并给出可行动提示，
+                // 引擎无法自行重新进入小程序，不无限空等
+                host.onStatus("⚠ 小程序已退出，请重新打开到话术通关列表后点「▶ 继续」")
+                host.vibrate(800)
+                paused = true
+                sleep(1500)
+                return
+            }
             host.onStatus("请在微信中打开小程序学习页面")
         } else {
             host.onStatus("等待页面…")
