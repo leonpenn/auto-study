@@ -11,6 +11,7 @@
 ## 版本发布
 
 - `versionCode` 单调递增（覆盖安装依赖）；`versionName` 与发布 tag 一致；
+- **test 测试包不打 tag、不发 Release**——tag/Release 只给通过真机验证的正式版本；测试包通过微信/网盘直传分发；
 - 每次发版同步更新：`使用说明.md` 版本表、`产品设计开发文档.md` 版本表、`release/` 下 APK（中文+ASCII 各一份）；
 - **签名信息不入库**：keystore.jks 与 keystore.properties（含密码）已被 .gitignore 排除、由 Leon 本地保管；clone 后需自建 keystore.properties 才能签名构建（格式见 app/build.gradle 读取逻辑）。
 
