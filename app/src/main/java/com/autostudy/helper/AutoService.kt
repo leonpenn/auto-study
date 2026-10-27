@@ -304,6 +304,24 @@ class AutoService : AccessibilityService(), Engine.EngineHost {
         return PointF(best.bounds.centerX().toFloat(), best.bounds.centerY().toFloat())
     }
 
+    override fun windowPackage(): String? = pkgOf(root())
+
+    override fun relaunchApp(pkg: String): Boolean = try {
+        val i = packageManager.getLaunchIntentForPackage(pkg)
+        if (i == null) {
+            LogRepo.log("svc", "无法拉起${pkg}：未找到可启动入口")
+            false
+        } else {
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(i)
+            LogRepo.log("svc", "已重新拉起 $pkg")
+            true
+        }
+    } catch (e: Exception) {
+        LogRepo.log("svc", "拉起App异常: ${e.message}")
+        false
+    }
+
     override fun onStatus(status: String) {
         LogRepo.log("engine", "状态: $status")
         notifyPanelStatus(status)

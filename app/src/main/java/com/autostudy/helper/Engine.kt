@@ -43,6 +43,10 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         fun onStatus(status: String)
         fun onDetail(detail: String)
         fun vibrate(ms: Long)
+        /** 当前前台窗口的包名（用于识别是否退出了学习App） */
+        fun windowPackage(): String?
+        /** 通过桌面意图重新拉起指定App（新平台为独立App，退出后可自动恢复） */
+        fun relaunchApp(pkg: String): Boolean
     }
 
     // ---------- 运行控制 ----------
@@ -99,6 +103,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     /** 本专题朗读原文（小测AI答题参考材料；专题通过/跳过/换专题后清除） */
     private val topicReadings = ArrayList<String>()
     private val topicReadingsCap = 12000         // 材料总字数上限（防极端长专题撑爆请求）
+    /** 新平台（小邮助手）是独立App：运行中动态记录其包名，用于退出后自动重新拉起 */
+    @Volatile private var appPkg: String? = null
 
     // ---------- 统计 ----------
     @Volatile var statCompleted = 0; private set
@@ -313,6 +319,16 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             stubTicks = 0
         }
         val joined = nodes.joinToString("\n") { it.display }
+
+        // 新平台（小邮助手）是独立App：在其页面上时动态记录包名，
+        // 供"意外退出到桌面"时自动重新拉起
+        if ((appPkg == null || appPkg!!.isEmpty()) &&
+            (joined.contains("小邮助手") || joined.contains("通关次数") ||
+                    joined.contains("题目数量（") || joined.contains("训练次数"))
+        ) {
+            appPkg = host.windowPackage()
+            appPkg?.let { LogRepo.log("engine", "记录学习App包名: $it") }
+        }
 
         when {
             looksLikeMicPermission(joined) -> handleMicPermission(nodes, joined)
@@ -1695,7 +1711,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         if (joined.contains("提交跟读") || (joined.contains("运行中") && joined.contains("暂停") && joined.length < 300)) {
             host.onStatus("⚠ 屏幕读取异常，请重开无障碍开关")
         }
-        // 微信主页？
+        // 微信主页（旧平台退出）？
         val wechatHome = listOf("消息", "通讯录", "发现", "我").all { k -> nodes.any { it.text == k } }
         if (wechatHome) {
             if (topicTitle.isNotEmpty()) {
@@ -1708,9 +1724,20 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 return
             }
             host.onStatus("请在微信中打开小程序学习页面")
-        } else {
-            host.onStatus("等待页面…")
+            sleep(1800)
+            return
         }
+        // 桌面（新平台独立App退出）？自动重新拉起App恢复流程
+        val curPkg = host.windowPackage()
+        val appP = appPkg
+        if (appP != null && curPkg != null && curPkg != appP && curPkg.contains("launcher")) {
+            LogRepo.log("engine", "检测到已退出学习App（当前$curPkg），自动重新拉起")
+            host.onStatus("App已退出，自动重新拉起…")
+            host.relaunchApp(appP)
+            sleep(4000)
+            return
+        }
+        host.onStatus("等待页面…")
         // 在专题中卡在未知页面超过60秒：返回键退出
         if (topicTitle.isNotEmpty() && System.currentTimeMillis() - unknownSince > 60_000) {
             LogRepo.log("engine", "未知页面超60秒，返回键恢复")
