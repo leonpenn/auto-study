@@ -256,8 +256,8 @@ class SettingsActivity : AppCompatActivity() {
         gRow.addView(spGuessSingle, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         gRow.addView(spGuessMulti, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         box.addView(gRow)
-        box.addView(label("小测不合格时的自动重试次数"))
-        etFailRetry = edit("默认2", Prefs.failRetry.toString())
+        box.addView(label("小测不合格时的自动重试次数（新平台默认10，超限暂停）"))
+        etFailRetry = edit("默认10", Prefs.failRetry.toString())
         box.addView(etFailRetry)
 
         // ---------- 数据 ----------

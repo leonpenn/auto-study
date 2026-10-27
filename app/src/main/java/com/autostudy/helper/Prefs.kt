@@ -88,10 +88,10 @@ object Prefs {
         get() = sp.getString("guess_multi", "all") ?: "all"
         set(v) = sp.edit().putString("guess_multi", v).apply()
 
-    /** 小测不合格时自动"重新通关"的最大重试次数 */
+    /** 小测不合格时自动重试的最大次数（新平台默认10次，超过暂停） */
     var failRetry: Int
-        get() = sp.getInt("fail_retry", 2)
-        set(v) = sp.edit().putInt("fail_retry", v.coerceIn(0, 10)).apply()
+        get() = sp.getInt("fail_retry", 10)
+        set(v) = sp.edit().putInt("fail_retry", v.coerceIn(0, 20)).apply()
 
     // ---------- 统计 ----------
     var totalCompleted: Int

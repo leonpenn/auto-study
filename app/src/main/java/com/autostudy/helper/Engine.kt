@@ -321,10 +321,14 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             joined.contains("训练次数") || joined.contains("任务介绍") -> handleDesc(nodes)
             // 反馈/结果页要先于小测判断（弹层后面能看到题目文本）
             joined.contains("通关反馈") -> handleFeedback(nodes)
-            joined.contains("通关结果") -> handleResult(nodes, joined)
+            // 结果页两平台：旧"通关结果"，新平台"通关评价/题目解析"
+            joined.contains("通关结果") || joined.contains("通关评价") ||
+                    joined.contains("题目解析") -> handleResult(nodes, joined)
             isQuiz(joined, nodes) -> handleQuiz(nodes)
             // 学习页：读完朗读后"请朗读以下文字"可能变为"朗读完成"，用进度头兜底
             isLearning(joined) -> handleLearning(nodes, joined)
+            // 新平台中间页（57.jpg）：话术通关卡片+查看按钮+场景对练——点"查看"进任务列表
+            joined.contains("场景对练") -> handleHub(nodes)
             // 列表页：旧平台"话术通关"，新平台（小邮助手）标题+卡片"通关次数"
             joined.contains("话术通关") || joined.contains("小邮助手") ||
                     joined.contains("通关次数") -> handleList(nodes, joined)
@@ -543,6 +547,41 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                         LogRepo.log("desc", "及格线=$passScore 分")
                     }
                 }
+        }
+        // 新平台（小邮助手）无未通关过滤，列表混合已通关任务：
+        // 详情页"训练次数 N次"N>0 = 此前已通关 → 点"稍后再来"返回列表并跳过
+        if (topicTitle.isNotEmpty()) {
+            val trained = nodes.firstOrNull { it.text.contains("训练次数") }?.let {
+                Regex("(\\d+)").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
+                    ?: nodes.filter { n ->
+                        n.visible && Math.abs(n.bounds.centerY() - it.bounds.centerY()) < 60 &&
+                                n.bounds.left > it.bounds.right
+                    }.minByOrNull { n -> n.bounds.left }?.text?.toIntOrNull()
+            }
+            if (trained != null && trained > 0) {
+                LogRepo.log("desc", "训练次数=$trained 已通关过，跳过该任务")
+                skipTitles.add(topicTitle)
+                statSkipped++
+                Prefs.totalSkipped = Prefs.totalSkipped + 1
+                val later = ScreenReader.findByContains(nodes, "稍后再来")
+                if (later != null && later.visible) {
+                    clickNode(later)
+                } else {
+                    host.back()
+                }
+                sleep(rand(1500L, 2500L))
+                topicTitle = ""
+                topicAnswers.clear()
+                topicReadings.clear()
+                answeredStems.clear()
+                lastLearnedSig = null
+                lastLearnX = null
+                lastQuizStem = null
+                quizSubmitSig = null
+                quizSubmitWaits = 0
+                enterState(null)
+                return
+            }
         }
         val go = ScreenReader.findByContains(nodes, "立即开始")
             ?: ScreenReader.findByContains(nodes, "开始学习")
@@ -812,7 +851,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 if (v != null) return v
                 val j = nodes.joinToString("\n") { it.display }
                 if (j.contains("【单选】") || j.contains("【多选】") || j.contains("【判断】") ||
-                    j.contains("通关反馈") || j.contains("通关结果")
+                    j.contains("通关反馈") || j.contains("通关结果") || j.contains("通关评价")
                 ) return "pass"
             }
             // 评测结果通常前5秒就出来，轮询密一点；之后放缓
@@ -838,7 +877,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val nodes = ScreenReader.collect(root)
             val j = nodes.joinToString("\n") { it.display }
             val quizOrResult = j.contains("【单选】") || j.contains("【多选】") || j.contains("【判断】") ||
-                    j.contains("通关反馈") || j.contains("通关结果")
+                    j.contains("通关反馈") || j.contains("通关结果") || j.contains("通关评价")
             if (quizOrResult) return true
             val afterX = learningSig(nodes)
             if (afterX > beforeX) return true
@@ -1000,7 +1039,9 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private fun findNextButton(nodes: List<SNode>): SNode? {
         val screenH = screenBounds()?.height() ?: return null
         val bottomLimit = screenH * 0.78
+        // "小测"=新平台朗读最后一题的推进按钮（53.jpg底部"小测 >"）
         val btn = ScreenReader.findByContains(nodes, "下一题")
+            ?: ScreenReader.findByContains(nodes, "小测")
             ?: nodes.filter { it.text.startsWith("提交") }.minByOrNull { it.bounds.bottom }
             ?: return null
         return if (btn.visible && btn.bounds.top >= bottomLimit) btn else null
@@ -1016,7 +1057,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val n3 = ScreenReader.collect(r3)
             val j3 = n3.joinToString("\n") { it.display }
             if (j3.contains("【单选】") || j3.contains("【多选】") || j3.contains("【判断】") ||
-                j3.contains("通关反馈") || j3.contains("通关结果")
+                j3.contains("通关反馈") || j3.contains("通关结果") || j3.contains("通关评价")
             ) return true
             if (learningSig(n3) > beforeX) return true
         }
@@ -1050,10 +1091,13 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     // ================= 04 小测 =================
 
     private fun isQuiz(joined: String, nodes: List<SNode>): Boolean {
-        if (joined.contains("【单选】") || joined.contains("【多选】") || joined.contains("【判断】")) return true
+        // 题型标记两平台：旧"【单选】/【多选】"，新"多选题/单选题/判断题"
+        if (joined.contains("【单选】") || joined.contains("【多选】") || joined.contains("【判断】") ||
+            joined.contains("多选题") || joined.contains("单选题") || joined.contains("判断题")
+        ) return true
         val optCount = ScreenReader.findAll(nodes) { Regex("^[A-H]、").containsMatchIn(it) }.size
-        // 旧平台兜底：小测进度+选项行
-        if (joined.contains("小测(") && optCount > 0) return true
+        // 旧平台兜底：小测进度+选项行（半角/全角括号都兼容）
+        if (Regex("小测[（(]\\d+/\\d+[)）]").containsMatchIn(joined) && optCount > 0) return true
         // 新平台（小邮助手）：学习页无选项行，≥3个"A、"选项行即视为小测
         return optCount >= 3
     }
@@ -1081,7 +1125,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         val stemParts = nodes.filter { it.text.isNotEmpty() && it.bounds.bottom <= firstOptTop + 8 && it.bounds.top > 150 }
             .sortedBy { it.bounds.top * 10000 + it.bounds.left }
         val marker = stemParts.firstOrNull {
-            it.text.contains("【单选】") || it.text.contains("【多选】") || it.text.contains("【判断】")
+            it.text.contains("【单选】") || it.text.contains("【多选】") || it.text.contains("【判断】") ||
+                    it.text.contains("多选题") || it.text.contains("单选题") || it.text.contains("判断题")
         }
         // 有标记时以标记行为题干起点；无标记时取选项上方约2行作为题干
         val lowestTop = stemParts.maxOfOrNull { it.bounds.top } ?: 0
@@ -1232,7 +1277,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 val r2 = host.root() ?: continue
                 val n2 = ScreenReader.collect(r2)
                 val j2 = n2.joinToString("\n") { it.display }
-                if (j2.contains("通关结果") || j2.contains("通关反馈")) break
+                if (j2.contains("通关结果") || j2.contains("通关反馈") || j2.contains("通关评价")) break
                 // 可能出现确认弹窗
                 val confirm = n2.firstOrNull { it.text in setOf("确定", "确认") }
                 if (confirm != null) {
@@ -1259,7 +1304,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val r2 = host.root() ?: break
             val n2 = ScreenReader.collect(r2)
             val j2 = n2.joinToString("\n") { it.display }
-            if (!j2.contains(stemText.take(10)) || j2.contains("通关反馈") || j2.contains("通关结果")) break
+            if (!j2.contains(stemText.take(10)) || j2.contains("通关反馈") || j2.contains("通关结果") || j2.contains("通关评价")) break
         }
     }
 
@@ -1289,6 +1334,25 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 // 固定选最前面一个未被证伪的字母（A错顺延B，依次类推）
                 (pool.firstOrNull() ?: available.first()).toString()
             }
+        }
+    }
+
+    // ================= 04.5 新平台中间页（57.jpg） =================
+
+    /**
+     * 小邮助手中间页：返回通关列表后落在此页（话术通关卡片+查看按钮+场景对练）。
+     * 点"查看"进入任务列表（50.jpg），交回 handleList 继续下一个专题。
+     */
+    private fun handleHub(nodes: List<SNode>) {
+        enterState("HUB")
+        updateDetail("话术通关中间页")
+        val view = ScreenReader.findByContains(nodes, "查看")
+        if (view != null && view.visible) {
+            LogRepo.log("hub", "点击[查看]进入任务列表")
+            clickNode(view)
+            sleep(rand(1500L, 2500L))
+        } else {
+            sleep(1200)
         }
     }
 
@@ -1448,8 +1512,9 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val hasPassed = Regex("已通关\\(\\d+\\)").containsMatchIn(j)
             val hasUnpassed = Regex("未通关\\(\\d+\\)").containsMatchIn(j)
             // 失败结果页没有"通关排名"标题（44.jpg实证），不强等它：
-            // 排名表+两个计数齐备即视为加载完成
-            complete = hasBranch && hasPassed && hasUnpassed
+            // 排名表+两个计数齐备即视为加载完成（旧平台）；
+            // 新平台（小邮助手）结果页特征="通关评价"，出现即视为加载完成
+            complete = j.contains("通关评价") || (hasBranch && hasPassed && hasUnpassed)
             if (complete) break
             sleep(700)
             loadWaited += 700
@@ -1464,13 +1529,37 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         )
         host.onStatus(if (complete) "结果加载完成" else "结果加载超时，强制返回")
         // 成绩节点限定在屏幕上部60%区域内取——排名列表（含他人"NN分"独立节点）
-        // 位于页面下方，树序在前的排名条目可能被误当成本次成绩
+        // 位于页面下方，树序在前的排名条目可能被误当成本次成绩。
+        // 新平台（55.jpg）分数在盾牌内："分数"文字节点附近找纯数字节点
         val scoreTopLimit = screenBounds()?.let { it.top + (it.height() * 0.60).toInt() } ?: Int.MAX_VALUE
         val score = nodes.filter { it.visible && it.bounds.top < scoreTopLimit }.mapNotNull {
             Regex("^\\s*(\\d{1,3})\\s*分\\s*$").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
         }.firstOrNull()
+            ?: run {
+                // 新平台："分数"标签附近的 1~3 位纯数字节点
+                val scoreLabel = nodes.firstOrNull { it.text == "分数" } ?: return@run null
+                nodes.filter {
+                    it.visible && it.text.matches(Regex("\\d{1,3}")) && it.bounds.top < scoreTopLimit &&
+                            Math.abs(it.bounds.centerX() - scoreLabel.bounds.centerX()) < 300 &&
+                            Math.abs(it.bounds.centerY() - scoreLabel.bounds.centerY()) < 200
+                }.minByOrNull { Math.abs(it.bounds.centerY() - scoreLabel.bounds.centerY()) }
+                    ?.text?.toIntOrNull()
+            }
             ?: Regex("首次通关成绩\\s*(\\d{1,3})\\s*分").find(joined)?.groupValues?.get(1)?.toIntOrNull()
-        val pass = joined.contains("恭喜通关") || joined.contains("通关成功") || (score != null && score >= passScore)
+        // 通过判定（用户指定首选判据）：
+        // ①页面有"返回通关列表"按钮（新旧平台通过页都有）→ 通过
+        // ②旧平台失败页有"再次挑战" → 不通过
+        // ③新平台失败页（通关评价但无任何按钮，56.jpg）→ 不通过
+        val hasBackToList = ScreenReader.findByContains(nodes, "返回通关列表")?.takeIf { it.visible }
+        val hasRetake = ScreenReader.findByContains(nodes, "再次挑战")?.takeIf { it.visible }
+        val isNewResult = joined.contains("通关评价")
+        val pass = when {
+            hasBackToList != null -> true
+            hasRetake != null -> false
+            isNewResult && score != null -> score >= passScore
+            isNewResult -> false
+            else -> joined.contains("恭喜通关") || joined.contains("通关成功") || (score != null && score >= passScore)
+        }
         updateDetail("成绩: ${score ?: "?"} ${if (pass) "✔合格" else "✘不合格"}")
         LogRepo.log("result", "专题=$topicTitle 分数=$score pass=$pass retries=$quizRetries")
 
@@ -1522,49 +1611,20 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 lastQuizStem = null
                 quizSubmitSig = null
                 quizSubmitWaits = 0
-                // 失败结果页按钮为"再次挑战"（40.jpg，点击直接回到小测阶段，
-                // 不重做朗读）；旧文案"重新通关"保留兼容。
-                // 结果页加载中树可能塌缩（45.jpg实证root=1节点时找不到按钮、
-                // back()会退出小程序）：轮询15秒专等按钮，塌缩自动poke，
-                // 找不到则暂停（绝不back()）
-                var waited = 0
-                var retry: SNode? = null
-                while (waited < 15_000 && !stopFlag) {
-                    val r = host.root()
-                    if (r == null) {
-                        sleep(700)
-                        waited += 700
-                        continue
-                    }
-                    val nn = ScreenReader.collect(r)
-                    retry = ScreenReader.findByContains(nn, "再次挑战")
-                        ?: ScreenReader.findByContains(nn, "重新通关")
-                    if (retry != null && retry.visible) break
-                    if (nn.size < 25 && waited % 3000 == 0) {
-                        LogRepo.log("result", "树塌缩(${nn.size}节点)，poke自愈")
-                        host.poke()
-                    }
-                    sleep(700)
-                    waited += 700
-                }
-                if (retry != null && retry.visible) {
+                // 两平台重试路径分流：
+                // 旧平台失败页有"再次挑战"按钮 → 点它（直达小测）
+                // 新平台失败页无任何按钮（56.jpg）→ back()返回，由详情页
+                //   "立即开始"重进（服务端记进度，跳过朗读直达答题）
+                // back() 已有微信主页拦截保护，不会退出小程序
+                val retake = ScreenReader.findByContains(nodes, "再次挑战")
+                if (retake != null && retake.visible) {
                     LogRepo.log("result", "点击[再次挑战]")
-                    clickNode(retry)
+                    clickNode(retake)
                     sleep(rand(2000L, 3000L))
-                    // 可能出现"确认重新通关"弹窗
-                    host.root()?.let { r ->
-                        val nn = ScreenReader.collect(r)
-                        nn.firstOrNull { it.text in setOf("确定", "确认") }?.let {
-                            clickNode(it)
-                            LogRepo.log("result", "点击重试确认弹窗")
-                            sleep(1200)
-                        }
-                    }
                 } else {
-                    LogRepo.log("result", "15秒未找到[再次挑战]按钮，暂停等待人工")
-                    host.onStatus("⚠ 未找到再次挑战按钮，已暂停")
-                    host.vibrate(800)
-                    paused = true
+                    LogRepo.log("result", "失败页无重试按钮，back()返回后重进当前任务")
+                    host.back()
+                    sleep(rand(2000L, 3000L))
                 }
             } else {
                 if (!resultCounted) {
