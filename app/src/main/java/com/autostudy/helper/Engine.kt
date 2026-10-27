@@ -88,6 +88,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private var resultCounted = false          // 当前专题的成绩是否已计入统计（防返回列表点击失败时重复累加）
     private var passedAwaitingAdvance: String? = null  // 已评测通过但尚未翻页成功的题（绝不重读，只补点翻页）
     private var passAdvanceFails = 0
+    /** 本专题及格线：旧平台60分，新平台（小邮助手）从详情页"不低于NN分"提取 */
+    private var passScore = 60
     private var lastLearnedSig: String? = null   // 刚读完并已点下一题的那条（防页面未切换时重复朗读）
     private var lastLearnX: String? = null       // 学习进度x，前进时刷新看门狗
     private var lastQuizStem: String? = null     // 当前小测题干，切题时刷新看门狗
@@ -315,19 +317,23 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         when {
             looksLikeMicPermission(joined) -> handleMicPermission(nodes, joined)
             joined.contains("本次通关说明") -> handleDesc(nodes)
+            // 新平台（小邮助手）任务详情页：训练次数/任务介绍为其特有文案，直接点"立即开始"
+            joined.contains("训练次数") || joined.contains("任务介绍") -> handleDesc(nodes)
             // 反馈/结果页要先于小测判断（弹层后面能看到题目文本）
             joined.contains("通关反馈") -> handleFeedback(nodes)
             joined.contains("通关结果") -> handleResult(nodes, joined)
             isQuiz(joined, nodes) -> handleQuiz(nodes)
             // 学习页：读完朗读后"请朗读以下文字"可能变为"朗读完成"，用进度头兜底
             isLearning(joined) -> handleLearning(nodes, joined)
-            joined.contains("话术通关") -> handleList(nodes, joined)
+            // 列表页：旧平台"话术通关"，新平台（小邮助手）标题+卡片"通关次数"
+            joined.contains("话术通关") || joined.contains("小邮助手") ||
+                    joined.contains("通关次数") -> handleList(nodes, joined)
             else -> handleUnknown(nodes, joined)
         }
         watchdog()
     }
 
-    private val learnHeaderRe = Regex("学习\\(\\d+/\\d+\\)")
+    private val learnHeaderRe = Regex("(?:学习|题目数量)[（(](\\d+)/(\\d+)[)）]")
 
     private fun isLearning(joined: String): Boolean =
         joined.contains("请朗读") || learnHeaderRe.containsMatchIn(joined)
@@ -487,19 +493,27 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         sleep(rand(1500L, 2600L))
     }
 
-    /** 兜底找卡片：标签行下方最上方的"标题样"文本（排除元数据行） */
+    /** 兜底找卡片：标签/搜索框下方最上方的"标题样"文本（排除元数据行） */
     private fun fallbackCard(nodes: List<SNode>): SNode? {
-        val tab = ScreenReader.findByPrefix(nodes, "未通关")
+        // 锚点：旧平台"未通关/已通关"标签，新平台（小邮助手）搜索框
+        val anchor = ScreenReader.findByPrefix(nodes, "未通关")
             ?: ScreenReader.findByPrefix(nodes, "已通关")
+            ?: ScreenReader.findByContains(nodes, "输入")
             ?: return null
-        if (!tab.visible) return null
-        val tabBottom = tab.bounds.bottom
+        if (!anchor.visible) return null
+        val tabBottom = anchor.bounds.bottom
         return nodes.filter { n ->
             n.visible && n.text.length in 6..80 && n.bounds.top > tabBottom + 30 &&
                     !n.text.contains("#") &&
                     !n.text.contains("长期有效") &&
                     !n.text.contains("话术通关") &&
-                    !n.text.contains("输入关键词") &&
+                    !n.text.contains("输入") &&
+                    !n.text.contains("通关次数") &&
+                    !n.text.contains("截止时间") &&
+                    !n.text.contains("训练次数") &&
+                    !n.text.contains("任务介绍") &&
+                    !n.text.contains("小邮助手") &&
+                    !n.text.contains("通关合格") &&
                     !Regex("\\d{4}\\.\\d{2}\\.\\d{2}").containsMatchIn(n.text) &&
                     !Regex("^[\\d\\s人+]+$").containsMatchIn(n.text)
         }.minByOrNull { it.bounds.top }
@@ -519,6 +533,17 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private fun handleDesc(nodes: List<SNode>) {
         enterState("DESC")
         updateDetail("通关说明弹窗")
+        // 及格线自适应：新旧详情页均有"通关合格条件…不低于NN分"
+        // （旧平台60分，新平台80分），提取为本专题的通过阈值
+        nodes.firstOrNull { it.text.contains("不低于") && it.text.contains("分") }?.let {
+            Regex("(\\d{2,3})\\s*分").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
+                ?.takeIf { s -> s in 60..100 }?.let { s ->
+                    if (s != passScore) {
+                        passScore = s
+                        LogRepo.log("desc", "及格线=$passScore 分")
+                    }
+                }
+        }
         val go = ScreenReader.findByContains(nodes, "立即开始")
             ?: ScreenReader.findByContains(nodes, "开始学习")
         if (go != null) {
@@ -534,7 +559,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     private fun handleLearning(nodes: List<SNode>, joined: String) {
         enterState("LEARN")
-        val progress = Regex("学习\\((\\d+)/(\\d+)\\)").find(joined)
+        // 进度头两平台兼容：旧"学习(x/y)"，新"题目数量（x/y）"（全角括号）
+        val progress = learnHeaderRe.find(joined)
         val x = progress?.groupValues?.get(1) ?: "?"
         // 进度前进时刷新看门狗：长专题（如7条话术）整个学习阶段都处于LEARN态，
         // 若不刷新会被状态超时误判为卡死而跳过
@@ -999,7 +1025,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     /** 学习进度号x（"学习(x/y)"），无进度头返回-1 */
     private fun learningSig(nodes: List<SNode>): Int {
-        val m = Regex("学习\\((\\d+)/(\\d+)\\)").find(nodes.joinToString(" ") { it.display })
+        val m = learnHeaderRe.find(nodes.joinToString(" ") { it.display })
         return m?.groupValues?.get(1)?.toIntOrNull() ?: -1
     }
 
@@ -1025,9 +1051,11 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     private fun isQuiz(joined: String, nodes: List<SNode>): Boolean {
         if (joined.contains("【单选】") || joined.contains("【多选】") || joined.contains("【判断】")) return true
-        // 兜底：有小测进度且有"字母、"选项行
-        return joined.contains("小测(") &&
-                ScreenReader.findAll(nodes) { Regex("^[A-H]、").containsMatchIn(it) }.isNotEmpty()
+        val optCount = ScreenReader.findAll(nodes) { Regex("^[A-H]、").containsMatchIn(it) }.size
+        // 旧平台兜底：小测进度+选项行
+        if (joined.contains("小测(") && optCount > 0) return true
+        // 新平台（小邮助手）：学习页无选项行，≥3个"A、"选项行即视为小测
+        return optCount >= 3
     }
 
     private fun handleQuiz(nodes: List<SNode>) {
@@ -1442,7 +1470,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             Regex("^\\s*(\\d{1,3})\\s*分\\s*$").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
         }.firstOrNull()
             ?: Regex("首次通关成绩\\s*(\\d{1,3})\\s*分").find(joined)?.groupValues?.get(1)?.toIntOrNull()
-        val pass = joined.contains("恭喜通关") || joined.contains("通关成功") || (score != null && score >= 60)
+        val pass = joined.contains("恭喜通关") || joined.contains("通关成功") || (score != null && score >= passScore)
         updateDetail("成绩: ${score ?: "?"} ${if (pass) "✔合格" else "✘不合格"}")
         LogRepo.log("result", "专题=$topicTitle 分数=$score pass=$pass retries=$quizRetries")
 
