@@ -1532,19 +1532,19 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                     ?.text?.toIntOrNull()
             }
             ?: Regex("首次通关成绩\\s*(\\d{1,3})\\s*分").find(joined)?.groupValues?.get(1)?.toIntOrNull()
-        // 通过判定（用户指定首选判据）：
-        // ①页面有"返回通关列表"按钮（新旧平台通过页都有）→ 通过
-        // ②旧平台失败页有"再次挑战" → 不通过
-        // ③新平台失败页（通关评价但无任何按钮，56.jpg）→ 不通过
-        val hasBackToList = ScreenReader.findByContains(nodes, "返回通关列表")?.takeIf { it.visible }
+        // 通过判定（用户指定，test10 起）：
+        // ①能提取到成绩数字 → score >= passScore 为唯一判据。
+        //   注意不能再用"返回通关列表按钮=通过"：50分"合格"页同样带该按钮（实测误判）
+        // ②无成绩数字回退：旧平台失败页"再次挑战"→不通过；
+        //   新平台"通关评价"页无分数（异常态）→不通过（宁重试勿漏刷）
+        // ③旧平台无分数无按钮：恭喜通关/通关成功文案→通过
         val hasRetake = ScreenReader.findByContains(nodes, "再次挑战")?.takeIf { it.visible }
         val isNewResult = joined.contains("通关评价")
         val pass = when {
-            hasBackToList != null -> true
+            score != null -> score >= passScore
             hasRetake != null -> false
-            isNewResult && score != null -> score >= passScore
             isNewResult -> false
-            else -> joined.contains("恭喜通关") || joined.contains("通关成功") || (score != null && score >= passScore)
+            else -> joined.contains("恭喜通关") || joined.contains("通关成功")
         }
         updateDetail("成绩: ${score ?: "?"} ${if (pass) "✔合格" else "✘不合格"}")
         LogRepo.log("result", "专题=$topicTitle 分数=$score pass=$pass retries=$quizRetries")
@@ -1599,12 +1599,13 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 quizSubmitWaits = 0
                 // 两平台重试路径分流：
                 // 旧平台失败页有"再次挑战"按钮 → 点它（直达小测）
-                // 新平台失败页无任何按钮（56.jpg）→ back()返回，由详情页
-                //   "立即开始"重进（服务端记进度，跳过朗读直达答题）
-                // back() 已有微信主页拦截保护，不会退出小程序
-                val retake = ScreenReader.findByContains(nodes, "再次挑战")
-                if (retake != null && retake.visible) {
-                    LogRepo.log("result", "点击[再次挑战]")
+                // 新平台失败页（55.jpg同布局）有"重新通关"按钮 → 点它（直达重考）
+                // 两者都没有（56.jpg）→ back()返回，由详情页"立即开始"重进
+                //   （服务端记进度，跳过朗读直达答题）
+                val retake = ScreenReader.findByContains(nodes, "再次挑战")?.takeIf { it.visible }
+                    ?: ScreenReader.findByContains(nodes, "重新通关")?.takeIf { it.visible }
+                if (retake != null) {
+                    LogRepo.log("result", "点击[${retake.text}]重新通关")
                     clickNode(retake)
                     sleep(rand(2000L, 3000L))
                 } else {
