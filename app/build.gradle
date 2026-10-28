@@ -18,8 +18,8 @@ android {
         applicationId "com.autostudy.helper"
         minSdk 24
         targetSdk 34
-        versionCode 50
-        versionName "1.1.0-test12"
+        versionCode 51
+        versionName "1.1.0-test13"
     }
 
     signingConfigs {

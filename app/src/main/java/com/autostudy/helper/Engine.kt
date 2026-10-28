@@ -1365,14 +1365,16 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
      * 屏幕内可见的"查看"按钮。WebView 单页应用切换页面后旧页 DOM 可能残留
      * （隐藏节点 bounds 在屏幕外但宽高>0，SNode.visible 判定不了），
      * 必须限定节点中心落在屏幕范围内才算数。
+     * 多个候选时取面积最小者：含"查看"文字的可能是整行容器节点（其中心
+     * 会偏下点中下方任务行，实测误点"富国中证红利增强"行），文字节点最小。
      */
     private fun findViewBtnOnScreen(nodes: List<SNode>): SNode? {
         val sb = screenBounds() ?: return null
-        return nodes.firstOrNull {
+        return nodes.filter {
             it.visible && it.text.contains("查看") &&
                     it.bounds.centerY() in sb.top..sb.bottom &&
                     it.bounds.centerX() in sb.left..sb.right
-        }
+        }.minByOrNull { it.bounds.width() * it.bounds.height() }
     }
 
     private fun handleHub(nodes: List<SNode>) {
@@ -1528,6 +1530,28 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
 
     // ================= 06 通关结果 =================
 
+    /**
+     * 提取本次小测成绩（三种形态）：
+     * ①"NN分"独立文本节点（限屏幕上部60%，排除下方排名列表的他人分数）；
+     * ②新平台（55.jpg）盾牌内"分数"标签附近的 1~3 位纯数字节点；
+     * ③旧平台"首次通关成绩NN分"文本。
+     */
+    private fun extractScore(nodes: List<SNode>, joined: String, scoreTopLimit: Int): Int? {
+        return nodes.filter { it.visible && it.bounds.top < scoreTopLimit }.mapNotNull {
+            Regex("^\\s*(\\d{1,3})\\s*分\\s*$").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
+        }.firstOrNull()
+            ?: run {
+                val scoreLabel = nodes.firstOrNull { it.text == "分数" } ?: return@run null
+                nodes.filter {
+                    it.visible && it.text.matches(Regex("\\d{1,3}")) && it.bounds.top < scoreTopLimit &&
+                            Math.abs(it.bounds.centerX() - scoreLabel.bounds.centerX()) < 300 &&
+                            Math.abs(it.bounds.centerY() - scoreLabel.bounds.centerY()) < 200
+                }.minByOrNull { Math.abs(it.bounds.centerY() - scoreLabel.bounds.centerY()) }
+                    ?.text?.toIntOrNull()
+            }
+            ?: Regex("首次通关成绩\\s*(\\d{1,3})\\s*分").find(joined)?.groupValues?.get(1)?.toIntOrNull()
+    }
+
     private fun handleResult(nodes0: List<SNode>, joined0: String) {
         enterState("RESULT")
         // 结果页刚打开时数据可能未加载完（24.jpg）：过早点"返回通关列表"会直接
@@ -1537,6 +1561,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         var joined = joined0
         var loadWaited = 0
         var complete = false
+        val scoreTopLimit = screenBounds()?.let { it.top + (it.height() * 0.60).toInt() } ?: Int.MAX_VALUE
         while (loadWaited < 20_000 && !stopFlag) {
             val j = nodes.joinToString("\n") { it.display }
             val hasTitle = j.contains("通关排名")
@@ -1545,8 +1570,10 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             val hasUnpassed = Regex("未通关\\(\\d+\\)").containsMatchIn(j)
             // 失败结果页没有"通关排名"标题（44.jpg实证），不强等它：
             // 排名表+两个计数齐备即视为加载完成（旧平台）；
-            // 新平台（小邮助手）结果页特征="通关评价"，出现即视为加载完成
-            complete = j.contains("通关评价") || (hasBranch && hasPassed && hasUnpassed)
+            // 新平台（小邮助手）："通关评价"标题先渲染、分数数字后渲染（实测
+            // 成绩达标却误判不合格即此因）——必须等分数能提取到才算加载完成
+            complete = (j.contains("通关评价") && extractScore(nodes, j, scoreTopLimit) != null) ||
+                    (hasBranch && hasPassed && hasUnpassed)
             if (complete) break
             sleep(700)
             loadWaited += 700
@@ -1560,37 +1587,36 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                     (if (!complete) "（超时强制继续）" else "")
         )
         host.onStatus(if (complete) "结果加载完成" else "结果加载超时，强制返回")
-        // 成绩节点限定在屏幕上部60%区域内取——排名列表（含他人"NN分"独立节点）
-        // 位于页面下方，树序在前的排名条目可能被误当成本次成绩。
-        // 新平台（55.jpg）分数在盾牌内："分数"文字节点附近找纯数字节点
-        val scoreTopLimit = screenBounds()?.let { it.top + (it.height() * 0.60).toInt() } ?: Int.MAX_VALUE
-        val score = nodes.filter { it.visible && it.bounds.top < scoreTopLimit }.mapNotNull {
-            Regex("^\\s*(\\d{1,3})\\s*分\\s*$").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
-        }.firstOrNull()
-            ?: run {
-                // 新平台："分数"标签附近的 1~3 位纯数字节点
-                val scoreLabel = nodes.firstOrNull { it.text == "分数" } ?: return@run null
-                nodes.filter {
-                    it.visible && it.text.matches(Regex("\\d{1,3}")) && it.bounds.top < scoreTopLimit &&
-                            Math.abs(it.bounds.centerX() - scoreLabel.bounds.centerX()) < 300 &&
-                            Math.abs(it.bounds.centerY() - scoreLabel.bounds.centerY()) < 200
-                }.minByOrNull { Math.abs(it.bounds.centerY() - scoreLabel.bounds.centerY()) }
-                    ?.text?.toIntOrNull()
-            }
-            ?: Regex("首次通关成绩\\s*(\\d{1,3})\\s*分").find(joined)?.groupValues?.get(1)?.toIntOrNull()
-        // 通过判定（用户指定，test10 起）：
+        val score = extractScore(nodes, joined, scoreTopLimit)
+        // 通过判定（用户指定，test10 起；test13 三态化）：
         // ①能提取到成绩数字 → score >= passScore 为唯一判据。
         //   注意不能再用"返回通关列表按钮=通过"：50分"合格"页同样带该按钮（实测误判）
         // ②无成绩数字回退：旧平台失败页"再次挑战"→不通过；
-        //   新平台"通关评价"页无分数（异常态）→不通过（宁重试勿漏刷）
         // ③旧平台无分数无按钮：恭喜通关/通关成功文案→通过
+        // ④新平台"通关评价"页但分数始终提取不到（渲染异常）→ 未知态：
+        //   不判负（会误触发重试）也不判过，点"返回通关列表"由列表裁决——
+        //   已通过则任务从列表消失自动进下一个；未通过则任务还在列表被重做
         val hasRetake = ScreenReader.findByContains(nodes, "再次挑战")?.takeIf { it.visible }
         val isNewResult = joined.contains("通关评价")
-        val pass = when {
+        val pass: Boolean? = when {
             score != null -> score >= passScore
             hasRetake != null -> false
-            isNewResult -> false
+            isNewResult -> null
             else -> joined.contains("恭喜通关") || joined.contains("通关成功")
+        }
+        if (pass == null) {
+            LogRepo.log("result", "结果页分数未识别(${loadWaited}ms)，回列表由列表裁决")
+            host.onStatus("结果未知，回列表验证")
+            val back = ScreenReader.findByContains(nodes, "返回通关列表")
+            if (back != null && back.visible) clickNode(back) else host.back()
+            sleep(rand(1600L, 2600L))
+            // 若任务未通关还在列表，重进时必须能正常重新作答（清守卫防交白卷）
+            answeredStems.clear()
+            topicAnswers.clear()
+            lastQuizStem = null
+            quizSubmitSig = null
+            quizSubmitWaits = 0
+            return
         }
         updateDetail("成绩: ${score ?: "?"} ${if (pass) "✔合格" else "✘不合格"}")
         LogRepo.log("result", "专题=$topicTitle 分数=$score pass=$pass retries=$quizRetries")
