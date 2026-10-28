@@ -274,7 +274,10 @@ class AutoService : AccessibilityService(), Engine.EngineHost {
         // a) 关键词命中
         nodes.firstOrNull { n ->
             n.visible && n.bounds.top >= bandTop && (n.desc + n.text).let {
-                it.contains("话筒") || it.contains("录音") || it.lowercase().contains("mic")
+                it.contains("话筒") || it.contains("录音") || it.lowercase().contains("mic") ||
+                        // 中断恢复场景：话筒图标变为圆形文字按钮"继续跟读/继续朗读"（59.jpg）。
+                        // 限定完整词避免命中底部提示气泡"点一下开始跟读，无需长按"
+                        (it.contains("继续跟读") || it.contains("继续朗读"))
             }
         }?.let {
             LogRepo.log("mic", "识别话筒(关键词): ${it.bounds}")

@@ -67,6 +67,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private var state: String? = null
     private var stateEnter = 0L
     private var listTabClicked = false
+    private var listNoCardWaits = 0
     private var listScrolled = false
     private var listScrolledAttempts = 0
     private var topicTitle = ""
@@ -344,9 +345,11 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             // 学习页：读完朗读后"请朗读以下文字"可能变为"朗读完成"，用进度头兜底
             isLearning(joined) -> handleLearning(nodes, joined)
             // 新平台中间页（57.jpg）：话术通关卡片+查看按钮+场景对练——点"查看"进任务列表
-            // 特征三项任一即视为模块主页（提高识别覆盖）
-            joined.contains("场景对练") || joined.contains("新人专区") ||
-                    joined.contains("话术库") -> handleHub(nodes)
+            // 特征三项任一 + 屏幕内确有"查看"按钮（列表页 50 的 WebView 隐藏 DOM 会残留
+            // "话术库/场景对练"字样，单看文字特征会把列表页误判成 HUB 空转）
+            (joined.contains("场景对练") || joined.contains("新人专区") ||
+                    joined.contains("话术库")) &&
+                    findViewBtnOnScreen(nodes) != null -> handleHub(nodes)
             // 列表页：旧平台"话术通关"，新平台（小邮助手）标题+卡片"通关次数"
             joined.contains("话术通关") || joined.contains("小邮助手") ||
                     joined.contains("通关次数") -> handleList(nodes, joined)
@@ -471,6 +474,23 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                 finishAll()
                 return
             }
+            // 模块主页（57）HUB特征词缺失（渲染中）会被误分类为列表页：
+            // 屏幕内有"查看"按钮即点它进真正的列表，避免空滚3次后误暂停
+            val view = findViewBtnOnScreen(nodes)
+            if (view != null) {
+                LogRepo.log("list", "无卡片但本页有[查看]按钮，疑似模块主页，点查看进列表")
+                clickNode(view)
+                sleep(rand(1800L, 2600L))
+                return
+            }
+            // 确认在列表页（新平台搜索框/旧平台标签）但卡片未渲染：等数据加载，不要急着滚动
+            if ((joined.contains("请输入搜索") || joined.contains("未通关")) && listNoCardWaits < 8) {
+                listNoCardWaits++
+                LogRepo.log("list", "列表页无卡片，等待数据加载(${listNoCardWaits}/8)")
+                sleep(1500)
+                return
+            }
+            listNoCardWaits = 0
             if (listScrolledAttempts < 3) {
                 // 允许连续滚动3次（加载慢/卡片靠下）；每次暂停恢复后计数清零重新尝试
                 LogRepo.log("list", "当前屏未找到卡片，尝试滚动(${listScrolledAttempts + 1}/3)")
@@ -492,6 +512,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         }
         listScrolled = false
         listScrolledAttempts = 0
+        listNoCardWaits = 0
         topicTitle = card.text.take(50)
         hadTask = true
         // 每个新专题优先回到点按录音模式（点按历史表现最好；
@@ -1340,11 +1361,25 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
      * 小邮助手中间页：返回通关列表后落在此页（话术通关卡片+查看按钮+场景对练）。
      * 点"查看"进入任务列表（50.jpg），交回 handleList 继续下一个专题。
      */
+    /**
+     * 屏幕内可见的"查看"按钮。WebView 单页应用切换页面后旧页 DOM 可能残留
+     * （隐藏节点 bounds 在屏幕外但宽高>0，SNode.visible 判定不了），
+     * 必须限定节点中心落在屏幕范围内才算数。
+     */
+    private fun findViewBtnOnScreen(nodes: List<SNode>): SNode? {
+        val sb = screenBounds() ?: return null
+        return nodes.firstOrNull {
+            it.visible && it.text.contains("查看") &&
+                    it.bounds.centerY() in sb.top..sb.bottom &&
+                    it.bounds.centerX() in sb.left..sb.right
+        }
+    }
+
     private fun handleHub(nodes: List<SNode>) {
         enterState("HUB")
         updateDetail("话术通关中间页")
-        val view = ScreenReader.findByContains(nodes, "查看")
-        if (view != null && view.visible) {
+        val view = findViewBtnOnScreen(nodes)
+        if (view != null) {
             LogRepo.log("hub", "点击[查看]进入任务列表")
             clickNode(view)
             sleep(rand(1500L, 2500L))
