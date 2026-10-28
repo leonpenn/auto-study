@@ -43,10 +43,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         fun onStatus(status: String)
         fun onDetail(detail: String)
         fun vibrate(ms: Long)
-        /** 当前前台窗口的包名（用于识别是否退出了学习App） */
+        /** 当前前台窗口的包名（用于区分学习App内/外） */
         fun windowPackage(): String?
-        /** 通过桌面意图重新拉起指定App（新平台为独立App，退出后可自动恢复） */
-        fun relaunchApp(pkg: String): Boolean
     }
 
     // ---------- 运行控制 ----------
@@ -344,7 +342,9 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             // 学习页：读完朗读后"请朗读以下文字"可能变为"朗读完成"，用进度头兜底
             isLearning(joined) -> handleLearning(nodes, joined)
             // 新平台中间页（57.jpg）：话术通关卡片+查看按钮+场景对练——点"查看"进任务列表
-            joined.contains("场景对练") -> handleHub(nodes)
+            // 特征三项任一即视为模块主页（提高识别覆盖）
+            joined.contains("场景对练") || joined.contains("新人专区") ||
+                    joined.contains("话术库") -> handleHub(nodes)
             // 列表页：旧平台"话术通关"，新平台（小邮助手）标题+卡片"通关次数"
             joined.contains("话术通关") || joined.contains("小邮助手") ||
                     joined.contains("通关次数") -> handleList(nodes, joined)
@@ -1727,18 +1727,18 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             sleep(1800)
             return
         }
-        // 桌面（新平台独立App退出）？自动重新拉起App恢复流程
+        // 学习App外（前台包名≠宿主包名：桌面/微信/其他App）？
+        // 仅提醒（不back不暂停），用户回到「小邮助手-通关话术」页面后自动恢复
         val curPkg = host.windowPackage()
-        val appP = appPkg
-        if (appP != null && curPkg != null && curPkg != appP && curPkg.contains("launcher")) {
-            LogRepo.log("engine", "检测到已退出学习App（当前$curPkg），自动重新拉起")
-            host.onStatus("App已退出，自动重新拉起…")
-            host.relaunchApp(appP)
-            sleep(4000)
+        val outside = appPkg != null && curPkg != null && curPkg != appPkg
+        if (outside) {
+            host.onStatus("请回到「小邮助手-通关话术」页面")
+            sleep(1800)
             return
         }
         host.onStatus("等待页面…")
         // 在专题中卡在未知页面超过60秒：返回键退出
+        // （仅限学习App内——App外已在上方提醒并return）
         if (topicTitle.isNotEmpty() && System.currentTimeMillis() - unknownSince > 60_000) {
             LogRepo.log("engine", "未知页面超60秒，返回键恢复")
             host.back()
