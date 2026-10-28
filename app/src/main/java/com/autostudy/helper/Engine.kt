@@ -70,6 +70,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
     private var listScrolled = false
     private var listScrolledAttempts = 0
     private var topicTitle = ""
+    /** 会话内是否进入过学习任务（未知页提醒/恢复判定用；escapeTopic不清除） */
+    private var hadTask = false
     private var quizRetries = 0
     private var micMode = 0 // 0=未知 1=点按 2=长按
     private var micModeTriedHold = false
@@ -491,6 +493,7 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         listScrolled = false
         listScrolledAttempts = 0
         topicTitle = card.text.take(50)
+        hadTask = true
         // 每个新专题优先回到点按录音模式（点按历史表现最好；
         // 长按模式只在点按失败时作为本专题内的兜底）
         micMode = 1
@@ -1711,19 +1714,18 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         if (joined.contains("提交跟读") || (joined.contains("运行中") && joined.contains("暂停") && joined.length < 300)) {
             host.onStatus("⚠ 屏幕读取异常，请重开无障碍开关")
         }
-        // 微信主页（旧平台退出）？
+        // 微信主页（旧平台退出/任务中误切微信）？
         val wechatHome = listOf("消息", "通讯录", "发现", "我").all { k -> nodes.any { it.text == k } }
         if (wechatHome) {
-            if (topicTitle.isNotEmpty()) {
-                // 任务中意外退出小程序（如back触发）：暂停并给出可行动提示，
-                // 引擎无法自行重新进入小程序，不无限空等
-                host.onStatus("⚠ 小程序已退出，请重新打开到话术通关列表后点「▶ 继续」")
+            if (hadTask || topicTitle.isNotEmpty()) {
+                // 任务中意外退出学习App：暂停并给出可行动提示（引擎无法自行重新进入）
+                host.onStatus("⚠ 学习App已退出，请重新打开小邮助手到话术通关列表后点「▶ 继续」")
                 host.vibrate(800)
                 paused = true
                 sleep(1500)
                 return
             }
-            host.onStatus("请在微信中打开小程序学习页面")
+            host.onStatus("请打开「小邮助手」进入话术通关页面")
             sleep(1800)
             return
         }
@@ -1736,9 +1738,9 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
             sleep(1800)
             return
         }
-        host.onStatus("等待页面…")
-        // 在专题中卡在未知页面超过60秒：返回键退出
-        // （仅限学习App内——App外已在上方提醒并return）
+        // 宿主App内的未识别页（或appPkg未记录时的任意未知页）：
+        // 同样提醒回到「小邮助手-通关话术」页面，60秒back恢复仅在此之后触发
+        host.onStatus("请回到「小邮助手-通关话术」页面")
         if (topicTitle.isNotEmpty() && System.currentTimeMillis() - unknownSince > 60_000) {
             LogRepo.log("engine", "未知页面超60秒，返回键恢复")
             host.back()
