@@ -819,11 +819,22 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
         return false
     }
 
-    /** 最近一次朗读的评测标识："pass"/"fail"；页面无标识返回null。多条记录取最下方（最新） */
+    /** 新平台评测横幅（58.jpg）："欠佳 完成度需达到 80%，当前 71%，再试试吧~" */
+    private val completionBannerRe = Regex("完成度需达到\\s*(\\d{1,3})\\s*%.*?当前\\s*(\\d{1,3})\\s*%")
+
+    /** 最近一次朗读的评测标识："pass"/"fail"；页面无标识返回null。多条记录取最下方（最新）。
+     * 旧平台标识="已通过/未通过"；新平台横幅：含"欠佳"=失败；
+     * "完成度需达到NN%，当前MM%"按 MM>=NN 判通过（同格式横幅覆盖通过/不通过两面） */
     private fun latestReadVerdict(nodes: List<SNode>): String? {
         val marks = nodes.filter { it.text.contains("已通过") || it.text.contains("未通过") }
-        val latest = marks.maxByOrNull { it.bounds.top } ?: return null
-        return if (latest.text.contains("未通过")) "fail" else "pass"
+        val latest = marks.maxByOrNull { it.bounds.top }
+        if (latest != null) return if (latest.text.contains("未通过")) "fail" else "pass"
+        val banner = nodes.filter {
+            it.text.contains("欠佳") || completionBannerRe.containsMatchIn(it.text)
+        }.maxByOrNull { it.bounds.top } ?: return null
+        if (banner.text.contains("欠佳")) return "fail"
+        val m = completionBannerRe.find(banner.text) ?: return null
+        return if (m.groupValues[2].toInt() >= m.groupValues[1].toInt()) "pass" else "fail"
     }
 
     /** 等待评测标识出现；期间若已翻到小测/反馈/结果页，视为通过 */
