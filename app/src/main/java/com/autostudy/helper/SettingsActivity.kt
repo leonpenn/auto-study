@@ -93,22 +93,22 @@ class SettingsActivity : AppCompatActivity() {
         val presets = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         presets.addView(btn("智谱GLM") {
             etBaseUrl.setText("https://open.bigmodel.cn/api/paas/v4")
-            etModel.setText("glm-4-flash")
+            etModel.setText("GLM-5.3-Flash")
         })
         presets.addView(btn("DeepSeek") {
             etBaseUrl.setText("https://api.deepseek.com")
-            etModel.setText("deepseek-chat")
+            etModel.setText("deepseek-flash")
         })
         presets.addView(btn("Kimi") {
             etBaseUrl.setText("https://api.moonshot.cn/v1")
-            etModel.setText("moonshot-v1-8k")
+            etModel.setText("kimi-k3.1-pro")
         })
         box.addView(presets)
         box.addView(label("服务器地址(BaseURL，一般以 /v1 或 /v4 结尾)"))
         etBaseUrl = edit("https://open.bigmodel.cn/api/paas/v4", Prefs.llmBaseUrl)
         box.addView(etBaseUrl)
         box.addView(label("模型名称"))
-        etModel = edit("glm-4-flash", Prefs.llmModel)
+        etModel = edit("GLM-5.3-Flash", Prefs.llmModel)
         box.addView(etModel)
         box.addView(label("API Key"))
         etKey = edit("在此粘贴APIKey", Prefs.llmApiKey, password = true)

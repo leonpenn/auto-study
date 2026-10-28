@@ -106,10 +106,18 @@ class MainActivity : AppCompatActivity() {
         tvTts = row("③ 朗读语音(TTS)：未检测", "③ 朗读语音(TTS)：未检测", "检测", 0xFF888888.toInt()) {
             tvTts.text = "③ 朗读语音(TTS)：检测中…"
             tvTts.setTextColor(0xFF888888.toInt())
+            tvTts.setOnClickListener(null)
             TtsPlayer.probe(ctx, Prefs.ttsEngine) { ok, name, msg ->
                 runOnUiThread {
-                    tvTts.text = "③ TTS: ${name.take(24)} ${if (ok) "✔" else "✘"} $msg"
-                    tvTts.setTextColor(if (ok) 0xFF2E7D32.toInt() else 0xFFC62828.toInt())
+                    if (ok) {
+                        tvTts.text = "③ TTS: ${name.take(24)} ✔ $msg"
+                        tvTts.setTextColor(0xFF2E7D32.toInt())
+                        tvTts.setOnClickListener(null)
+                    } else {
+                        tvTts.text = "③ TTS: ✘ $msg（点此查看解决方法）"
+                        tvTts.setTextColor(0xFFC62828.toInt())
+                        tvTts.setOnClickListener { showTtsFixDialog() }
+                    }
                 }
             }
         }
@@ -117,22 +125,44 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(ctx, SettingsActivity::class.java))
         }
 
-        box.addView(title("二、开始使用"))
-        val steps = TextView(ctx).apply {
+        box.addView(title("二、开始使用（小邮助手）"))
+        val stepsNew = TextView(ctx).apply {
             textSize = 13f
             setTextColor(0xFF444444.toInt())
+            text = "1. 完成上面 ①~④ 检查\n" +
+                    "2. 打开「邮连」APP，进入「小邮助手」学习界面\n" +
+                    "3. 屏幕右侧出现悬浮窗，点「▶ 开始」\n" +
+                    "4. 保持亮屏前台，期间不要触碰手机\n" +
+                    "5. 可随时「⏸ 暂停」或「⏹ 停止」"
+        }
+        box.addView(stepsNew)
+        box.addView(TextView(ctx).apply {
+            textSize = 13f
+            setTextColor(0xFFC62828.toInt())
+            setTypeface(typeface, Typeface.BOLD)
+            text = "如果点击开始按钮之后，等待一会儿没有反应，请杀掉app，重新进入，按照1~3的步骤重新启用。"
+        })
+
+        box.addView(title("三、老版微信小程序学习平台使用说明"))
+        val stepsOld = TextView(ctx).apply {
+            textSize = 13f
+            setTextColor(0xFF888888.toInt())
             text = "1. 完成上面 ①~④ 检查\n" +
                     "2. 打开微信进入「话术通关」页面\n" +
                     "3. 屏幕右侧出现悬浮窗，点「▶ 开始」\n" +
                     "4. 保持亮屏前台，期间不要触碰手机\n" +
                     "5. 可随时「⏸ 暂停」或「⏹ 停止」"
         }
-        box.addView(steps)
+        box.addView(stepsOld)
+
+        box.addView(title("四、运行须知"))
         box.addView(TextView(ctx).apply {
-            textSize = 13f
-            setTextColor(0xFFC62828.toInt())
-            setTypeface(typeface, Typeface.BOLD)
-            text = "如果点击开始按钮之后，等待一会儿没有反应，请杀掉app，重新进入，按照1~3的步骤重新启用。"
+            textSize = 11f
+            setTextColor(0xFF999999.toInt())
+            text = "· 首次运行建议只跑1-2个专题，观察无误后再放量\n" +
+                    "· 小测答案由AI给出，答错会自动重试，仍不合格则跳过并记录\n" +
+                    "· 卡住的专题会自动退出并跳过，不影响后续任务\n" +
+                    "· 本工具仅操作您本人账号，请自行评估平台规则风险"
         })
 
         val btnRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(14), 0, 0) }
@@ -156,16 +186,6 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { showHelp() }
         })
         box.addView(btnRow)
-
-        box.addView(title("三、运行须知"))
-        box.addView(TextView(ctx).apply {
-            textSize = 11f
-            setTextColor(0xFF999999.toInt())
-            text = "· 首次运行建议只跑1-2个专题，观察无误后再放量\n" +
-                    "· 小测答案由AI给出，答错会自动重试，仍不合格则跳过并记录\n" +
-                    "· 卡住的专题会自动退出并跳过，不影响后续任务\n" +
-                    "· 本工具仅操作您本人账号，请自行评估平台规则风险"
-        })
     }
 
     override fun onResume() {
@@ -218,6 +238,34 @@ class MainActivity : AppCompatActivity() {
                         "【建议】手机插电、横竖屏保持不变、勿遮挡屏幕。"
             )
             .setPositiveButton("知道了", null)
+            .show()
+    }
+
+    /** TTS检测不通过时的解决指引：安装并配置「讯飞语记」 */
+    private fun showTtsFixDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("TTS检测不通过 · 解决方法")
+            .setMessage(
+                "请安装「讯飞语记」APP，并在该APP中打开设置：\n\n" +
+                        "1. 在「通用设置」页面中点击「语音合成」；\n" +
+                        "2. 开启「合成系统接口」；\n" +
+                        "3. 在「偏好的引擎」中选择「讯飞语记」；\n" +
+                        "4. 返回「讯飞语记」APP的「通用设置」页面，确认「系统识别接口」处于打开状态；\n" +
+                        "5. 返回学习通关助手APP，重新进行朗读语音(TTS)的检测。\n\n" +
+                        "提示：部分手机安装后会自动切换首选引擎；若未切换，请在系统「文字转语音设置」中手动将首选引擎选为讯飞语记。"
+            )
+            .setPositiveButton("去安装讯飞语记") { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=讯飞语记")))
+                } catch (e: Exception) {
+                    try {
+                        // 无应用市场时回退到华为应用市场网页
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://appgallery.huawei.com/")))
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            .setNegativeButton("知道了", null)
             .show()
     }
 

@@ -11,6 +11,19 @@ object Prefs {
 
     fun init(ctx: Context) {
         sp = ctx.getSharedPreferences("autostudy", Context.MODE_PRIVATE)
+        // 一次性迁移：旧默认模型名已被服务商下线/改名，自动升级为新默认值
+        // （仅当用户还停留在旧默认值时迁移，自定义模型名不受影响）
+        val cur = sp.getString("llm_model", "") ?: ""
+        val migrated = when (cur) {
+            "glm-4-flash" -> "GLM-5.3-Flash"
+            "deepseek-chat" -> "deepseek-flash"
+            "moonshot-v1-8k" -> "kimi-k3.1-pro"
+            else -> null
+        }
+        if (migrated != null) {
+            sp.edit().putString("llm_model", migrated).apply()
+            LogRepo.log("prefs", "模型名迁移: $cur → $migrated")
+        }
     }
 
     // ---------- 大模型 ----------
@@ -23,7 +36,7 @@ object Prefs {
         set(v) = sp.edit().putString("llm_api_key", v.trim()).apply()
 
     var llmModel: String
-        get() = sp.getString("llm_model", "glm-4-flash") ?: ""
+        get() = sp.getString("llm_model", "GLM-5.3-Flash") ?: ""
         set(v) = sp.edit().putString("llm_model", v.trim()).apply()
 
     val llmReady: Boolean get() = llmApiKey.isNotEmpty() && llmBaseUrl.isNotEmpty() && llmModel.isNotEmpty()
