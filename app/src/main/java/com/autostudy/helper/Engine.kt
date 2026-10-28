@@ -567,41 +567,8 @@ class Engine(private val host: EngineHost, private val appCtx: android.content.C
                     }
                 }
         }
-        // 新平台（小邮助手）无未通关过滤，列表混合已通关任务：
-        // 详情页"训练次数 N次"N>0 = 此前已通关 → 点"稍后再来"返回列表并跳过
-        if (topicTitle.isNotEmpty()) {
-            val trained = nodes.firstOrNull { it.text.contains("训练次数") }?.let {
-                Regex("(\\d+)").find(it.text)?.groupValues?.get(1)?.toIntOrNull()
-                    ?: nodes.filter { n ->
-                        n.visible && Math.abs(n.bounds.centerY() - it.bounds.centerY()) < 60 &&
-                                n.bounds.left > it.bounds.right
-                    }.minByOrNull { n -> n.bounds.left }?.text?.toIntOrNull()
-            }
-            if (trained != null && trained > 0) {
-                LogRepo.log("desc", "训练次数=$trained 已通关过，跳过该任务")
-                skipTitles.add(topicTitle)
-                statSkipped++
-                Prefs.totalSkipped = Prefs.totalSkipped + 1
-                val later = ScreenReader.findByContains(nodes, "稍后再来")
-                if (later != null && later.visible) {
-                    clickNode(later)
-                } else {
-                    host.back()
-                }
-                sleep(rand(1500L, 2500L))
-                topicTitle = ""
-                topicAnswers.clear()
-                topicReadings.clear()
-                answeredStems.clear()
-                lastLearnedSig = null
-                lastLearnX = null
-                lastQuizStem = null
-                quizSubmitSig = null
-                quizSubmitWaits = 0
-                enterState(null)
-                return
-            }
-        }
+        // 已通关任务不会出现在任务列表（平台侧已过滤），无需跳过逻辑；
+        // "训练次数"统计的是训练尝试次数而非通关次数，>0 不代表已通关，禁止据此跳过
         val go = ScreenReader.findByContains(nodes, "立即开始")
             ?: ScreenReader.findByContains(nodes, "开始学习")
         if (go != null) {
